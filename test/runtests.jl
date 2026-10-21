@@ -87,21 +87,45 @@ end
         @test NbIO.cell_source(nb["cells"][1]) == "y = 2\n"
     end
 
-    @testset "toplevel_name (AST walk for the auto export list)" begin
+    @testset "toplevel_names (AST walk for the auto export list)" begin
         function nm(src)
             e, _ = Meta.parse(src, 1)
-            return Export.toplevel_name(e)
+            return Export.toplevel_names(e)
         end
-        @test nm("function foo(x)\n x\nend") == "foo"
-        @test nm("foo(x; y=1) = x + y") == "foo"
-        @test nm("const BAR = 1") == "BAR"
-        @test nm("BAZ = 1") == "BAZ"
-        @test nm("struct Foo\n a::Int\nend") == "Foo"
-        @test nm("mutable struct Foo{T} <: Number\n a::T\nend") == "Foo"
-        @test nm("macro foo(x)\n x\nend") == "@foo"
-        @test nm("Base.show(io::IO, x::Foo) = print(io, \"Foo\")") === nothing
-        @test nm("println(\"side effect\")") === nothing
-        @test nm("\"\"\"a doc\"\"\"\nfoo(x) = x") == "foo"
+        @test nm("function foo(x)\n x\nend") == ["foo"]
+        @test nm("foo(x; y=1) = x + y") == ["foo"]
+        @test nm("const BAR = 1") == ["BAR"]
+        @test nm("BAZ = 1") == ["BAZ"]
+        @test nm("struct Foo\n a::Int\nend") == ["Foo"]
+        @test nm("mutable struct Foo{T} <: Number\n a::T\nend") == ["Foo"]
+        @test nm("macro foo(x)\n x\nend") == ["@foo"]
+        @test nm("Base.show(io::IO, x::Foo) = print(io, \"Foo\")") == []
+        @test nm("println(\"side effect\")") == []
+        @test nm("\"\"\"a doc\"\"\"\nfoo(x) = x") == ["foo"]
+
+        # The bug report this guards: names defined inside a `begin...end`
+        # block were silently dropped (the walker had no `:block` case at
+        # all — the whole block just fell through to "no name").
+        @test nm("""
+            begin
+                struct Foo
+                    x::Int
+                end
+                abstract type Bar end
+                baz(x) = x
+            end
+            """) == ["Foo", "Bar", "baz"]
+
+        # Nested blocks, and a block mixed with a doc-macrocall-wrapped def.
+        @test nm("""
+            begin
+                begin
+                    abstract type Inner end
+                end
+                \"\"\"doc\"\"\"
+                qux(x) = x
+            end
+            """) == ["Inner", "qux"]
     end
 
     @testset "self-import guard (catches a real loader deadlock at export time instead)" begin
@@ -168,6 +192,27 @@ end
 
         # Re-running against the already-marked file replaces the block in place, idempotently.
         @test !Export.update_main_module!(mainfile, res.relfiles, res.exportnames)
+    end
+
+    @testset "export_project: names grouped in a begin...end block are exported" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", """
+            #| export
+            begin
+                abstract type Shape end
+                struct Circle <: Shape
+                    r::Float64
+                end
+                area(c::Circle) = pi * c.r^2
+            end
+            """),
+        ])
+        res = Export.export_project(; cfg = cfg)
+        @test Set(res.exportnames) == Set(["Shape", "Circle", "area"])
+        written = read(joinpath(cfg.d["src_path"], "core.jl"), String)
+        @test occursin("abstract type Shape end", written)
+        @test occursin("struct Circle <: Shape", written)
     end
 
     @testset "export_project: index-style markdown-only notebook is silently skipped" begin

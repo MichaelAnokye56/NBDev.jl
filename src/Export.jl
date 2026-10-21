@@ -101,25 +101,45 @@ function basename_of(x)
     return nothing # e.g. `:.`  (qualified name like `Base.show`) — extends another module's function
 end
 
-"The single name a top-level expression `expr` introduces, or `nothing`."
-function toplevel_name(expr)
-    expr isa Expr || return nothing
+"""
+Every name a (possibly nested) expression `expr` introduces, as a list.
+Recurses into `begin...end`/`quote...end` blocks (and their `if`/`for`/
+`while`/`let`/`try` relatives below), since grouping several related
+`struct`/`abstract type`/`function` defs in one block inside an export
+cell is ordinary Julia style, not something nbdev's Python-AST equivalent
+ever had to handle (Python has no anonymous block-grouping statement) —
+this is one of the few places the Julia port needs *more* cases than the
+nbdev original, not fewer.
+"""
+function toplevel_names(expr)
+    expr isa Expr || return String[]
     h = expr.head
-    if h === :macrocall
+    if h in (:block, :quote)
+        names = String[]
+        for a in expr.args
+            a isa LineNumberNode && continue
+            append!(names, toplevel_names(a))
+        end
+        return names
+    elseif h === :macrocall
         # `"""doc"""` above a def parses as a @doc macrocall wrapping the real definition.
-        return toplevel_name(expr.args[end])
+        return toplevel_names(expr.args[end])
     elseif h === :function || h === :(=)
-        return (nm = basename_of(expr.args[1]); nm === nothing ? nothing : string(nm))
+        nm = basename_of(expr.args[1])
+        return nm === nothing ? String[] : [string(nm)]
     elseif h === :const
-        return toplevel_name(expr.args[1])
+        return toplevel_names(expr.args[1])
     elseif h === :struct
-        return (nm = basename_of(expr.args[2]); nm === nothing ? nothing : string(nm))
+        nm = basename_of(expr.args[2])
+        return nm === nothing ? String[] : [string(nm)]
     elseif h in (:abstract, :primitive)
-        return (nm = basename_of(expr.args[1]); nm === nothing ? nothing : string(nm))
+        nm = basename_of(expr.args[1])
+        return nm === nothing ? String[] : [string(nm)]
     elseif h === :macro
-        return (nm = basename_of(expr.args[1]); nm === nothing ? nothing : "@" * string(nm))
+        nm = basename_of(expr.args[1])
+        return nm === nothing ? String[] : ["@" * string(nm)]
     end
-    return nothing
+    return String[]
 end
 
 "Every top-level expression `src` parses to, in order, stopping silently at the first parse error."
@@ -145,8 +165,7 @@ end
 function toplevel_defined_names(src::AbstractString)
     names = String[]
     for expr in toplevel_exprs(src)
-        nm = toplevel_name(expr)
-        nm === nothing || push!(names, nm)
+        append!(names, toplevel_names(expr))
     end
     return names
 end
