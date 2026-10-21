@@ -1,5 +1,5 @@
 using NBJulia
-using NBJulia: NbIO, Process, Export, Config, Scaffold
+using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest
 using Test
 using OrderedCollections
 
@@ -273,6 +273,85 @@ end
         res = Export.export_project(; cfg = cfg)
         @test res.relfiles == ["core.jl"]
         @test res.exportnames == ["foo"]
+    end
+
+    @testset "does_cell_eval / select_test_cells" begin
+        plain = mk_cell("code", "x = 1")
+        notest = mk_cell("code", "#| notest\nx = 1")
+        evalfalse = mk_cell("code", "#| eval: false\nx = 1")
+        evaltrue = mk_cell("code", "#| notest\n#| eval: true\nx = 1") # eval directive overrides the skip-flag match
+        md = mk_cell("markdown", "# hi")
+
+        @test NbTest.does_cell_eval(plain, true) == true
+        @test NbTest.does_cell_eval(md, true) == false  # never a code cell
+        @test NbTest.does_cell_eval(evalfalse, true) == false
+        @test NbTest.does_cell_eval(notest, true, Set(["notest"])) == false
+        @test NbTest.does_cell_eval(notest, true, Set(["notest"]), Set(["notest"])) == true # force_flags cancels it
+        @test NbTest.does_cell_eval(evaltrue, true, Set(["notest"])) == true # eval:true overrides the skip flag
+
+        nb = mk_nb([("code", "a=1"), ("markdown", "# x"), ("code", "#| notest\nb=1"), ("code", "c=1")])
+        sel = NbTest.select_test_cells(nb)
+        @test length(sel) == 2 # the #|notest cell is skipped by default
+        @test NbIO.cell_source.(sel) == ["a=1", "c=1"]
+    end
+
+    @testset "test_nb: passing notebook, various assertion styles" begin
+        cfg = temp_project([
+            ("code", "f(x) = x + 1"),
+            ("code", "@assert f(1) == 2"),
+            ("code", "using Test\n@test f(2) == 3"),
+            ("code", "#| notest\nerror(\"this must not run by default\")"),
+        ])
+        nbpath = joinpath(cfg.d["nbs_path"], "core.ipynb")
+        passed, elapsed, err = NbTest.test_nb(nbpath)
+        @test passed
+        @test err === nothing
+        @test elapsed >= 0
+    end
+
+    @testset "test_nb: failing cell is reported with the right cell index/id" begin
+        cfg = temp_project([
+            ("code", "f(x) = x + 1"),
+            ("code", "@assert f(1) == 2"),
+            ("code", "@assert f(1) == 999"),  # fails here: 3rd selected cell (index 3)
+            ("code", "x = 1"),                # never reached
+        ])
+        nbpath = joinpath(cfg.d["nbs_path"], "core.ipynb")
+        passed, elapsed, err = NbTest.test_nb(nbpath)
+        @test !passed
+        @test err !== nothing
+        @test err.idx == 3
+        @test err.error isa AssertionError
+    end
+
+    @testset "test_nb: #| eval: false cell is skipped" begin
+        cfg = temp_project([
+            ("code", "#| eval: false\nerror(\"must not run\")"),
+            ("code", "x = 1"),
+        ])
+        nbpath = joinpath(cfg.d["nbs_path"], "core.ipynb")
+        passed, _, _ = NbTest.test_nb(nbpath)
+        @test passed
+    end
+
+    @testset "test_project: aggregates pass/fail across notebooks" begin
+        root = mktempdir()
+        write(joinpath(root, "Project.toml"), """
+        name = "TestPkg3"
+        uuid = "00000000-0000-0000-0000-000000000000"
+        version = "0.1.0"
+
+        [nbjulia]
+        nbs_path = "nbs"
+        """)
+        mkpath(joinpath(root, "nbs"))
+        NbIO.write_nb(mk_nb([("code", "@assert 1 == 1")]), joinpath(root, "nbs", "00_good.ipynb"))
+        NbIO.write_nb(mk_nb([("code", "@assert 1 == 2")]), joinpath(root, "nbs", "01_bad.ipynb"))
+        cfg = Config.load_config(root)
+        @test NbTest.test_project(; cfg = cfg) == false  # one notebook fails
+
+        NbIO.write_nb(mk_nb([("code", "@assert 1 == 1")]), joinpath(root, "nbs", "01_bad.ipynb"))
+        @test NbTest.test_project(; cfg = cfg) == true  # now both pass
     end
 
     @testset "real project smoke test: using NBJulia itself exports foo" begin

@@ -8,7 +8,7 @@ table (verified empirically; see
 """
 module Config
 
-export NBConfig, find_project_toml, load_config
+export NBConfig, find_project_toml, load_config, find_notebooks
 
 using TOML
 
@@ -87,6 +87,37 @@ function load_config(path::AbstractString = pwd())
     end
     lib_name = get(proj, "name", basename(root))
     return NBConfig(root, lib_name, d)
+end
+
+_skip_name(n::AbstractString) = startswith(n, '.') || startswith(n, '_')
+
+"""
+    find_notebooks(cfg)
+
+Every `.ipynb` file under `cfg.nbs_path`, sorted, skipping dot-/underscore-
+prefixed files and folders; recurses if `cfg.recursive` is set. Shared by
+`Export.export_project` and `NbTest.test_project` — the one place both
+need to agree on "what counts as a project notebook."
+"""
+function find_notebooks(cfg::NBConfig)
+    root = cfg.d["nbs_path"]
+    isdir(root) || return String[]
+    files = String[]
+    if cfg.d["recursive"]
+        for (dir, dirs, fs) in walkdir(root)
+            filter!(d -> !_skip_name(d), dirs)
+            for f in fs
+                (endswith(f, ".ipynb") && !_skip_name(f)) && push!(files, joinpath(dir, f))
+            end
+        end
+    else
+        for f in readdir(root)
+            full = joinpath(root, f)
+            (isfile(full) && endswith(f, ".ipynb") && !_skip_name(f)) && push!(files, full)
+        end
+    end
+    sort!(files)
+    return files
 end
 
 end # module Config
