@@ -83,7 +83,7 @@ function _write_nbjulia_layer!(root::AbstractString, name::AbstractString, descr
     desc_line = isempty(description) ? "> Fill in a description here" : "> $(description)"
     index_nb = NbIO.new_notebook([
         NbIO.markdown_cell("# $(name)\n\n$(desc_line)"),
-        NbIO.code_cell("#| hide\n# using $(name)"),
+        NbIO.code_cell("#| hide\nusing $(name)"),
         NbIO.markdown_cell("## Install\n\n```julia\nusing Pkg\nPkg.add(path=\"$(root)\")\n```"),
         NbIO.markdown_cell("## How to use\n\nFill this in as functionality is built."),
     ])

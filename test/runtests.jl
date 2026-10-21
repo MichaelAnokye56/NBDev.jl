@@ -104,6 +104,40 @@ end
         @test nm("\"\"\"a doc\"\"\"\nfoo(x) = x") == "foo"
     end
 
+    @testset "self-import guard (catches a real loader deadlock at export time instead)" begin
+        parsed(src) = first(Meta.parse(src, 1))
+        @test Export.imported_package_names(parsed("using MyLib")) == ["MyLib"]
+        @test Export.imported_package_names(parsed("using MyLib: foo")) == ["MyLib"]
+        @test Export.imported_package_names(parsed("using MyLib, Other")) == ["MyLib", "Other"]
+        @test Export.imported_package_names(parsed("using .MyLib")) == []  # relative — not a self-import risk
+        @test Export.imported_package_names(parsed("import MyLib")) == ["MyLib"]
+        @test Export.imported_package_names(parsed("foo(x) = x")) == []
+
+        @test_nowarn Export.check_no_self_import("using Other", "MyLib", "ctx")
+        @test_throws ErrorException Export.check_no_self_import("using MyLib", "MyLib", "ctx")
+        @test_throws ErrorException Export.check_no_self_import("x = 1\nusing MyLib: foo", "MyLib", "ctx")
+
+        # The actual regression this guards: exporting a cell that `using`s its
+        # own package must fail loudly at export time, not hang when loaded.
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nusing TestPkg\nfoo() = 1"),
+        ])
+        @test_throws ErrorException Export.export_project(; cfg = cfg)
+
+        # But a `#| hide` cell doing the same thing is fine: hide-only cells
+        # are never routed into any export bucket, so they can't deadlock.
+        cfg2 = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#| hide\nusing TestPkg"),
+            ("code", "#| export\nfoo() = 1"),
+        ])
+        res = Export.export_project(; cfg = cfg2)
+        @test res.exportnames == ["foo"]
+        written = read(joinpath(cfg2.d["src_path"], "core.jl"), String)
+        @test !occursin("using TestPkg", written)
+    end
+
     @testset "export_project: full round trip in an isolated temp project" begin
         cfg = temp_project([
             ("markdown", "# core\n\n> Fill in a module description here"),

@@ -122,9 +122,9 @@ function toplevel_name(expr)
     return nothing
 end
 
-"Every top-level name `src` defines, in order, skipping any parse error by stopping there."
-function toplevel_defined_names(src::AbstractString)
-    names = String[]
+"Every top-level expression `src` parses to, in order, stopping silently at the first parse error."
+function toplevel_exprs(src::AbstractString)
+    exprs = Any[]
     pos, n = 1, lastindex(src)
     while pos <= n
         local expr, newpos
@@ -134,10 +134,19 @@ function toplevel_defined_names(src::AbstractString)
             break
         end
         expr === nothing && break
-        nm = toplevel_name(expr)
-        nm === nothing || push!(names, nm)
+        push!(exprs, expr)
         newpos <= pos && break
         pos = newpos
+    end
+    return exprs
+end
+
+"Every top-level name `src` defines, in order."
+function toplevel_defined_names(src::AbstractString)
+    names = String[]
+    for expr in toplevel_exprs(src)
+        nm = toplevel_name(expr)
+        nm === nothing || push!(names, nm)
     end
     return names
 end
@@ -154,6 +163,49 @@ function collect_exported_names(cells)
         end
     end
     return unique(names)
+end
+
+# ---------------------------------------------------------------------------
+# Guard: a package must never `using`/`import` itself from its own exported
+# code — confirmed empirically to deadlock Julia's package loader (it hangs;
+# it does not raise a clean error), so catch it here instead, at export time.
+# ---------------------------------------------------------------------------
+
+"Module name(s) a top-level, *non-relative* `using`/`import` clause in `expr` refers to (empty if `expr` isn't one, or every clause is relative, e.g. `.Foo`)."
+function imported_package_names(expr)
+    expr isa Expr || return String[]
+    expr.head in (:using, :import) || return String[]
+    names = String[]
+    for clause in expr.args
+        modexpr = (clause isa Expr && clause.head === :(:)) ? clause.args[1] : clause
+        if modexpr isa Expr && modexpr.head === :(.) && length(modexpr.args) == 1 && modexpr.args[1] isa Symbol
+            push!(names, string(modexpr.args[1]))
+        end
+    end
+    return names
+end
+
+"""
+Error clearly if `src` contains a top-level `using`/`import` of `libname`
+itself, naming `context` (e.g. a notebook path) in the message.
+"""
+function check_no_self_import(src::AbstractString, libname::AbstractString, context::AbstractString)
+    for expr in toplevel_exprs(src)
+        if libname in imported_package_names(expr)
+            error(
+                "$(context): exported code contains `using/import $(libname)` — this " *
+                "makes the package try to import itself while loading, which deadlocks " *
+                "Julia's package loader (it hangs; it does not raise a clean error) " *
+                "rather than failing cleanly. Functions exported from *other* notebooks " *
+                "into the same package are already in scope with no `using` statement " *
+                "needed — remove this line from the exported cell. If you need `using " *
+                "$(libname)` for interactive use *inside the notebook* (e.g. to try out " *
+                "an already-exported function), put it in a separate cell tagged " *
+                "`#| hide` instead of `#| export`/`#| exporti`/`#| exports`/`#| exportd`.",
+            )
+        end
+    end
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -185,6 +237,16 @@ cell id. Returns `(relative_file_path, public_names)`.
 function write_module(cfg::Config.NBConfig, modname::String, tagged_cells, tagged_in_all)
     relfile = replace(modname, "." => "/") * ".jl"
     fname = joinpath(cfg.d["src_path"], relfile)
+
+    # Validate every cell *before* touching the file, so a bad cell never
+    # leaves behind a half-written/truncated module.
+    for (cell, nbpath) in tagged_cells
+        get(cell, "cell_type", "") == "code" || continue
+        src = NbIO.cell_source(cell)
+        src === nothing && continue
+        check_no_self_import(src, cfg.lib_name, "$(nbpath) (cell $(get(cell, "id", "?")))")
+    end
+
     mkpath(dirname(fname))
     docstring = build_docstring([c for (c, _) in tagged_cells])
     open(fname, "w") do io
