@@ -1,5 +1,5 @@
 using NBJulia
-using NBJulia: NbIO, Process, Export, Config
+using NBJulia: NbIO, Process, Export, Config, Scaffold
 using Test
 using OrderedCollections
 
@@ -172,6 +172,28 @@ end
         written = read(joinpath(cfg.d["src_path"], "core.jl"), String)
         @test occursin("foo() = 1", written)
         @test occursin("bar() = 2", written)
+    end
+
+    @testset "scaffold: produces a working nbdev-style Julia package" begin
+        dir = mktempdir()
+        root = Scaffold.scaffold(
+            "ScaffoldTestPkg"; dir = dir, user = "testuser",
+            author = "Test Author", author_email = "test@example.com",
+        )
+        @test isfile(joinpath(root, "Project.toml"))
+        @test isfile(joinpath(root, "src", "ScaffoldTestPkg.jl"))
+        @test isfile(joinpath(root, "nbs", "index.ipynb"))
+        @test isfile(joinpath(root, "nbs", "00_core.ipynb"))
+
+        proj = read(joinpath(root, "Project.toml"), String)
+        @test occursin("[nbjulia]", proj)
+        @test occursin("name = \"ScaffoldTestPkg\"", proj)
+        @test occursin("Test Author <test@example.com>", proj)
+
+        cfg = Config.load_config(root)
+        res = Export.export_project(; cfg = cfg)
+        @test res.relfiles == ["core.jl"]
+        @test res.exportnames == ["foo"]
     end
 
     @testset "real project smoke test: using NBJulia itself exports foo" begin

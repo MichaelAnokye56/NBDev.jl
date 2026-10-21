@@ -17,7 +17,8 @@ module NbIO
 
 export read_nb, write_nb, nb2str, nb_lang, cell_source, set_cell_source!,
        partition_source, cell_directives, has_directive, get_directive,
-       remove_directives!, strip_directive_lines, new_cell_id
+       remove_directives!, strip_directive_lines, new_cell_id,
+       code_cell, markdown_cell, new_notebook
 
 using JSON
 using OrderedCollections
@@ -188,6 +189,60 @@ function write_nb(nb, path::AbstractString)
     new_text == old_text && return nothing
     open(io -> write(io, new_text), path, "w")
     return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Building fresh notebooks (used by scaffolding, and handy for tests)
+# ---------------------------------------------------------------------------
+
+"A fresh code cell dict, structurally valid nbformat (so real Jupyter/VS Code can open it)."
+function code_cell(source::AbstractString; id::String = new_cell_id())
+    return OrderedDict{String,Any}(
+        "cell_type" => "code",
+        "execution_count" => nothing,
+        "metadata" => OrderedDict{String,Any}(),
+        "outputs" => Any[],
+        "source" => source,
+        "id" => id,
+    )
+end
+
+"A fresh markdown cell dict."
+function markdown_cell(source::AbstractString; id::String = new_cell_id())
+    return OrderedDict{String,Any}(
+        "cell_type" => "markdown",
+        "metadata" => OrderedDict{String,Any}(),
+        "source" => source,
+        "id" => id,
+    )
+end
+
+"""
+    new_notebook(cells; display_name="Julia", kernel_name="julia-1.13", julia_version=string(VERSION))
+
+A fresh notebook dict (nbformat 4.5) from a list of cells (`code_cell`/
+`markdown_cell`), with a Julia kernelspec so `nb_lang` resolves to `"julia"`.
+"""
+function new_notebook(
+    cells::AbstractVector;
+    display_name::AbstractString = "Julia",
+    kernel_name::AbstractString = "julia-1.13",
+    julia_version::AbstractString = string(VERSION),
+)
+    return OrderedDict{String,Any}(
+        "cells" => Any[cells...],
+        "metadata" => OrderedDict{String,Any}(
+            "kernelspec" => OrderedDict{String,Any}(
+                "display_name" => display_name, "language" => "julia", "name" => kernel_name,
+            ),
+            "language_info" => OrderedDict{String,Any}(
+                "file_extension" => ".jl", "mimetype" => "application/julia",
+                "name" => "julia", "version" => julia_version,
+            ),
+        ),
+        "nbformat" => 4,
+        "nbformat_minor" => 5,
+    )
 end
 
 end # module NbIO
