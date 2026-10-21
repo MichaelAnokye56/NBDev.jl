@@ -1,5 +1,5 @@
 using NBJulia
-using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs
+using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto
 using Test
 using OrderedCollections
 using Markdown
@@ -528,6 +528,56 @@ end
         @test occursin("callout-warning", qmd)
         @test occursin("boom", qmd)
         @test occursin("42", qmd)  # the cell *after* the error still rendered
+    end
+
+    @testset "NbQuarto.stage_docs" begin
+        cfg = temp_project([
+            ("markdown", "# core\n\n> description"),
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo(x) = x + 1"),
+        ])
+        stage = NbQuarto.stage_docs(cfg)
+        @test isdir(stage)
+        @test isfile(joinpath(stage, "core.qmd"))
+        @test isfile(joinpath(stage, "_quarto.yml"))
+
+        qmd = read(joinpath(stage, "core.qmd"), String)
+        @test occursin("# core", qmd)
+        @test occursin("### `foo`", qmd)
+
+        yml = read(joinpath(stage, "_quarto.yml"), String)
+        @test occursin("type: website", yml)
+        @test occursin("enabled: false", yml)
+        @test occursin("TestPkg", yml)
+        # output-dir must point at cfg.doc_path, relative to the staging dir
+        @test occursin(relpath(cfg.d["doc_path"], stage), yml)
+
+        # re-staging the *same* project wipes a now-removed notebook's stale .qmd
+        # instead of leaving it behind from a previous stage_docs call.
+        NbIO.write_nb(
+            mk_nb([("code", "#| default_exp extra"), ("code", "#| export\nbaz() = 1")]),
+            joinpath(cfg.root, "nbs", "extra.ipynb"),
+        )
+        stage_b = NbQuarto.stage_docs(cfg)
+        @test isfile(joinpath(stage_b, "extra.qmd"))
+        rm(joinpath(cfg.root, "nbs", "extra.ipynb"))
+        stage_c = NbQuarto.stage_docs(cfg)
+        @test !isfile(joinpath(stage_c, "extra.qmd"))
+        @test isfile(joinpath(stage_c, "core.qmd"))
+    end
+
+    @testset "NbQuarto.render_docs: real end-to-end quarto render" begin
+        cfg = temp_project([
+            ("markdown", "# core\n\n> description"),
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo(x) = x + 1"),
+        ])
+        @test Sys.which("quarto") !== nothing  # this machine has it; skip-worthy elsewhere
+        ok = NbQuarto.render_docs(cfg)
+        @test ok
+        @test isfile(joinpath(cfg.d["doc_path"], "core.html"))
+        html = read(joinpath(cfg.d["doc_path"], "core.html"), String)
+        @test occursin("foo", html)
     end
 
     @testset "real project smoke test: using NBJulia itself exports foo" begin
