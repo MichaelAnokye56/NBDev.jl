@@ -1,0 +1,13 @@
+name = "NBJulia"
+uuid = "3eebc052-47fe-49af-b748-16acf4bee79e"
+authors = ["Anokye <manokye56@gmail.com>"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
