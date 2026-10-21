@@ -1,26 +1,32 @@
 name = "NBJulia"
 uuid = "3eebc052-47fe-49af-b748-16acf4bee79e"
-authors = ["Anokye <manokye56@gmail.com>"]
 version = "1.0.0-DEV"
+authors = ["Anokye <manokye56@gmail.com>"]
+
+[deps]
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [compat]
+JSON = "1"
+OrderedCollections = "1, 2"
+TOML = "1"
 julia = "1.10"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
-[targets]
-test = ["Test"]
-
 [nbjulia]
-# Mirrors nbdev's [tool.nbdev] table (pyproject.toml), adapted for Julia's
-# conventional src/ layout. See ../ReverseEngineered/nbdev_files/ARCHITECTURE.md.
-nbs_path = "nbs"           # where source notebooks live
-doc_path = "_docs"         # where the rendered Quarto docs site is written
-src_path = "src"           # Julia's conventional library dir (nbdev's `lib_path`)
-readme_nb = "index.ipynb"  # notebook that generates README.md
-recursive = true           # search nbs_path recursively for notebooks
-clean_ids = true           # strip ids from plaintext output reprs on clean
-clear_all = false          # clean strips outputs/metadata but keeps them by default
 branch = "main"
 cell_timeout = 600
+clean_ids = true
+clear_all = false
+doc_path = "_docs"
+nbs_path = "nbs"
+readme_nb = "index.ipynb"
+recursive = true
+src_path = "src"
+
+[targets]
+test = ["Test"]
