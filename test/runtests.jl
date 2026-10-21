@@ -417,6 +417,119 @@ end
         @test idx["Bar"].src_file == "core.jl"
     end
 
+    @testset "NbDocs.explicitly_shown_names" begin
+        nb = mk_nb([
+            ("code", "show_doc(foo)"),
+            ("code", "show_doc(:bar)"),
+            ("code", "show_doc(\"baz\")"),
+            ("code", "NBJulia.show_doc(qux)"),  # qualified form: not recognized (documented simplification)
+            ("code", "x = 1"),
+            ("markdown", "# hi"),
+        ])
+        shown = NbDocs.explicitly_shown_names(nb)
+        @test shown == Set(["foo", "bar", "baz"])
+    end
+
+    @testset "NbDocs.plan_cell" begin
+        already = Set{String}()
+        plain = NbDocs.plan_cell(mk_cell("code", "x = 1"), already)
+        @test plain.visible && plain.show_source && !plain.fold && isempty(plain.auto_names)
+
+        exp = NbDocs.plan_cell(mk_cell("code", "#| export\nfoo(x) = x + 1"), already)
+        @test exp.visible && !exp.show_source && !exp.fold
+        @test exp.auto_names == ["foo"]
+        @test "foo" in already  # already_documented set gets extended
+
+        exports = NbDocs.plan_cell(mk_cell("code", "#| exports\nbar(x) = x + 1"), Set{String}())
+        @test exports.visible && exports.show_source && exports.fold
+        @test exports.auto_names == ["bar"]
+
+        exporti = NbDocs.plan_cell(mk_cell("code", "#| exporti\n_helper() = 1"), Set{String}())
+        @test exporti.visible && !exporti.show_source
+        @test isempty(exporti.auto_names)  # private — no doc card
+
+        hidden_export = NbDocs.plan_cell(mk_cell("code", "#| hide\n#| export\nfoo() = 1"), Set{String}())
+        @test !hidden_export.visible
+        @test isempty(hidden_export.auto_names)  # hidden wins — nbdev's own `_want_doc` excludes `hide` too
+
+        defexp = NbDocs.plan_cell(mk_cell("code", "#| default_exp core"), Set{String}())
+        @test defexp.visible && !defexp.show_source
+
+        # a name already in `already_documented` (e.g. an explicit show_doc elsewhere) isn't re-auto-inserted
+        pre = Set{String}(["foo"])
+        dup = NbDocs.plan_cell(mk_cell("code", "#| export\nfoo(x) = x + 1"), pre)
+        @test isempty(dup.auto_names)
+    end
+
+    @testset "NbDocs.is_silent_definition" begin
+        silent(src) = NbDocs.is_silent_definition(first(Export.toplevel_exprs(src)))
+        @test silent("function foo(x)\n x\nend")
+        @test silent("foo(x) = x + 1")
+        @test silent("struct Foo\n x::Int\nend")
+        @test silent("abstract type Foo end")
+        @test silent("macro foo(x)\n x\nend")
+        @test silent("\"\"\"doc\"\"\"\nfoo(x) = x")
+        @test !silent("x = 1")
+        @test !silent("DEFAULT_TIMEOUT = 30")
+        @test !silent("foo(1)")
+        @test !silent("println(\"hi\")")
+    end
+
+    @testset "render_notebook: full pipeline in an isolated temp project" begin
+        cfg = temp_project([
+            ("markdown", "# core\n\n> description"),
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo(x) = x + 1"),
+            ("code", "#| exports\nbar(x) = x + 2"),
+            ("code", "DEFAULT_TIMEOUT = 30"),
+            ("code", "#| hide\nx_hidden = 999"),
+            ("code", "#| eval: false\nerror(\"must not run\")"),
+        ])
+        qmd = NbDocs.render_notebook(joinpath(cfg.d["nbs_path"], "core.ipynb"), cfg)
+
+        @test occursin("# core", qmd)
+        @test !occursin("foo(x) = x + 1", qmd)       # plain export: source hidden
+        @test occursin("### `foo`", qmd)              # ...but still gets an auto show_doc card
+        @test occursin("bar(x) = x + 2", qmd)          # exports: source shown
+        @test occursin("code-fold", qmd)               # ...in a fold
+        @test occursin("### `bar`", qmd)
+        @test occursin("30", qmd)                       # plain assignment's value is shown
+        @test !occursin("999", qmd)                     # hidden cell: nothing from it appears
+        # #| eval: false means "show the code, but don't run it" (same as nbdev/Quarto's own
+        # meaning) — so the source *does* still appear, just with no execution/output/callout:
+        @test occursin("must not run", qmd)             # the source itself is shown...
+        @test !occursin("callout-warning", qmd)          # ...but it never actually ran
+
+        # a function-definition cell shouldn't *also* echo its own bare return value
+        # (Julia's `foo(x)=...` evaluates to the function object, unlike Python's `def`) —
+        # check the literal echo text, not "generic function" bare, since show_doc's own
+        # "no docstring found" fallback legitimately contains that phrase too.
+        @test !occursin("(generic function with", qmd)
+    end
+
+    @testset "render_notebook: explicit show_doc suppresses auto-insertion" begin
+        cfg = temp_project([
+            ("code", "#| hide\nusing NBJulia"),
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo(x) = x + 1"),
+            ("code", "show_doc(foo)"),
+        ])
+        qmd = NbDocs.render_notebook(joinpath(cfg.d["nbs_path"], "core.ipynb"), cfg)
+        @test count("### `foo`", qmd) == 1  # not duplicated
+    end
+
+    @testset "render_notebook: a cell error produces a callout and rendering continues" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "error(\"boom\")"),
+            ("code", "y = 42"),
+        ])
+        qmd = NbDocs.render_notebook(joinpath(cfg.d["nbs_path"], "core.ipynb"), cfg)
+        @test occursin("callout-warning", qmd)
+        @test occursin("boom", qmd)
+        @test occursin("42", qmd)  # the cell *after* the error still rendered
+    end
+
     @testset "real project smoke test: using NBJulia itself exports foo" begin
         # NBJulia's own nbs/00_core.ipynb exports `foo`; confirm the generated
         # src/core.jl round-trips through the actual package namespace.
