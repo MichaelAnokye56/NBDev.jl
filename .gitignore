@@ -2,3 +2,11 @@
 *.jl.cov
 *.jl.mem
 /Manifest*.toml
+
+# nbjulia: docs build output and Quarto/Jupyter working state
+/_docs/
+/_proc/
+.quarto/
+.ipynb_checkpoints/
+.last_checked
+.gitconfig

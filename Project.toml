@@ -11,3 +11,16 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
 test = ["Test"]
+
+[nbjulia]
+# Mirrors nbdev's [tool.nbdev] table (pyproject.toml), adapted for Julia's
+# conventional src/ layout. See ../ReverseEngineered/nbdev_files/ARCHITECTURE.md.
+nbs_path = "nbs"           # where source notebooks live
+doc_path = "_docs"         # where the rendered Quarto docs site is written
+src_path = "src"           # Julia's conventional library dir (nbdev's `lib_path`)
+readme_nb = "index.ipynb"  # notebook that generates README.md
+recursive = true           # search nbs_path recursively for notebooks
+clean_ids = true           # strip ids from plaintext output reprs on clean
+clear_all = false          # clean strips outputs/metadata but keeps them by default
+branch = "main"
+cell_timeout = 600
