@@ -1,5 +1,5 @@
 using NBJulia
-using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto
+using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto, NbClean, NbGit
 using Test
 using OrderedCollections
 using Markdown
@@ -16,6 +16,13 @@ function mk_cell(cell_type::String, source::String)
         "metadata" => OrderedDict{String,Any}(),
         "id" => NbIO.new_cell_id(),
     )
+end
+
+"Like `mk_cell`, but with an explicit `id` (for tests that need to align cells across three notebook variants, e.g. a 3-way merge)."
+function mk_cell_with_id(cell_type::String, source::String, id::String)
+    c = mk_cell(cell_type, source)
+    c["id"] = id
+    return c
 end
 
 "Build a minimal notebook dict from a list of (cell_type, source) pairs."
@@ -578,6 +585,213 @@ end
         @test isfile(joinpath(cfg.d["doc_path"], "core.html"))
         html = read(joinpath(cfg.d["doc_path"], "core.html"), String)
         @test occursin("foo", html)
+    end
+
+    @testset "NbClean.clean_notebook" begin
+        cell = mk_cell("code", "x = 1")
+        cell["execution_count"] = 5
+        cell["metadata"] = OrderedDict{String,Any}(
+            "collapsed" => true,
+            "nbdev" => OrderedDict{String,Any}("hide" => ""),
+        )
+        cell["outputs"] = Any[OrderedDict{String,Any}(
+            "output_type" => "execute_result",
+            "execution_count" => 5,
+            "data" => OrderedDict{String,Any}("text/plain" => "Ptr{Nothing} @0x00007f1234abcd"),
+        )]
+        nb = NbIO.new_notebook([cell])
+        nb["metadata"]["language_info"] = OrderedDict{String,Any}("name" => "julia")
+
+        cleaned = NbClean.clean_notebook(nb)
+        c = cleaned["cells"][1]
+        @test c["execution_count"] === nothing
+        @test c["id"] == "cell-0"                       # clean_ids=true default: deterministic position-based id
+        @test haskey(c["metadata"], "nbdev")             # kept: directives can live here (NbIO.cell_directives)
+        @test !haskey(c["metadata"], "collapsed")        # Jupyter UI noise: dropped
+        @test !haskey(cleaned["metadata"], "language_info")
+        @test c["outputs"][1]["data"]["text/plain"] == "Ptr{Nothing} @0x..."
+        @test c["outputs"][1]["execution_count"] === nothing
+
+        # original notebook untouched (pure function)
+        @test nb["cells"][1]["execution_count"] == 5
+
+        # clear_all=true drops outputs entirely instead of just de-noising them
+        all_cleared = NbClean.clean_notebook(nb; clear_all = true)
+        @test isempty(all_cleared["cells"][1]["outputs"])
+
+        # clean_ids=false leaves an existing id alone
+        kept_id = NbClean.clean_notebook(nb; clean_ids = false)
+        @test kept_id["cells"][1]["id"] == cell["id"]
+    end
+
+    @testset "NbClean.clean_nb / clean_project: on-disk round trip, no-op when already clean" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo(x) = x")])
+        nbpath = joinpath(cfg.root, "nbs", "core.ipynb")
+        before = read(nbpath, String)
+        @test occursin(r"\"id\": \"[0-9a-f]{8}\"", before) # random hex id from mk_cell, not yet cleaned
+
+        NbClean.clean_nb(nbpath; clear_all = cfg.d["clear_all"], clean_ids = cfg.d["clean_ids"])
+        after = read(nbpath, String)
+        @test occursin("\"id\": \"cell-0\"", after)
+        @test after != before
+
+        NbClean.clean_nb(nbpath; clear_all = cfg.d["clear_all"], clean_ids = cfg.d["clean_ids"])
+        @test read(nbpath, String) == after # idempotent: cleaning an already-clean notebook changes nothing
+
+        NbIO.write_nb(
+            mk_nb([("code", "#| default_exp extra"), ("code", "#| export\nbar() = 1")]),
+            joinpath(cfg.root, "nbs", "extra.ipynb"),
+        )
+        NbClean.clean_project(; cfg = cfg)
+        @test occursin("cell-0", read(joinpath(cfg.root, "nbs", "extra.ipynb"), String))
+    end
+
+    @testset "NbClean.clean_filter_main: stdin/stdout entry point used by the git clean filter" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo(x) = x")])
+        raw = read(joinpath(cfg.root, "nbs", "core.ipynb"), String)
+        cd(cfg.root) do
+            io_in = IOBuffer(raw)
+            io_out = IOBuffer()
+            NbClean.clean_filter_main(; io_in = io_in, io_out = io_out)
+            out = String(take!(io_out))
+            @test occursin("\"id\": \"cell-0\"", out)
+            @test occursin("\"execution_count\": null", out)
+        end
+    end
+
+    @testset "NbGit.merge_cells: pure 3-way cell-id merge policy" begin
+        base = mk_nb([("code", "x = 1"), ("code", "y = 2")])
+        base_ids = [c["id"] for c in base["cells"]]
+        id_a, id_b = base_ids[1], base_ids[2]
+
+        mknb(pairs...) = OrderedDict{String,Any}(
+            "cells" => Any[mk_cell_with_id(t, s, id) for (t, s, id) in pairs],
+            "metadata" => OrderedDict{String,Any}(),
+            "nbformat" => 4, "nbformat_minor" => 5,
+        )
+
+        # unchanged on both sides -> kept as-is
+        ours = mknb(("code", "x = 1", id_a), ("code", "y = 2", id_b))
+        theirs = mknb(("code", "x = 1", id_a), ("code", "y = 2", id_b))
+        merged, conflict = NbGit.merge_cells(base, ours, theirs)
+        @test !conflict
+        @test [NbIO.cell_source(c) for c in merged["cells"]] == ["x = 1", "y = 2"]
+
+        # only ours changed cell a -> ours wins, no conflict
+        ours = mknb(("code", "x = 100", id_a), ("code", "y = 2", id_b))
+        theirs = mknb(("code", "x = 1", id_a), ("code", "y = 2", id_b))
+        merged, conflict = NbGit.merge_cells(base, ours, theirs)
+        @test !conflict
+        @test NbIO.cell_source(merged["cells"][1]) == "x = 100"
+
+        # only theirs changed cell a -> theirs wins, no conflict
+        ours = mknb(("code", "x = 1", id_a), ("code", "y = 2", id_b))
+        theirs = mknb(("code", "x = 999", id_a), ("code", "y = 2", id_b))
+        merged, conflict = NbGit.merge_cells(base, ours, theirs)
+        @test !conflict
+        @test NbIO.cell_source(merged["cells"][1]) == "x = 999"
+
+        # both sides changed cell a differently -> true conflict, both versions kept
+        ours = mknb(("code", "x = 100", id_a), ("code", "y = 2", id_b))
+        theirs = mknb(("code", "x = 999", id_a), ("code", "y = 2", id_b))
+        merged, conflict = NbGit.merge_cells(base, ours, theirs)
+        @test conflict
+        sources = [NbIO.cell_source(c) for c in merged["cells"]]
+        @test "x = 100" in sources && "x = 999" in sources
+        @test "y = 2" in sources
+        @test any(s -> s !== nothing && occursin("merge conflict", s), sources)
+
+        # ours added a new cell, theirs untouched -> addition kept, no conflict
+        new_id = NbIO.new_cell_id()
+        ours = mknb(("code", "x = 1", id_a), ("code", "y = 2", id_b), ("code", "z = 3", new_id))
+        theirs = mknb(("code", "x = 1", id_a), ("code", "y = 2", id_b))
+        merged, conflict = NbGit.merge_cells(base, ours, theirs)
+        @test !conflict
+        @test "z = 3" in [NbIO.cell_source(c) for c in merged["cells"]]
+
+        # theirs cleanly deleted cell b (ours left it untouched) -> dropped, no conflict
+        ours = mknb(("code", "x = 1", id_a), ("code", "y = 2", id_b))
+        theirs = mknb(("code", "x = 1", id_a))
+        merged, conflict = NbGit.merge_cells(base, ours, theirs)
+        @test !conflict
+        @test !("y = 2" in [NbIO.cell_source(c) for c in merged["cells"]])
+
+        # ours edited cell b, theirs deleted it -> edit-vs-delete conflict, edit kept + flagged
+        ours = mknb(("code", "x = 1", id_a), ("code", "y = 200", id_b))
+        theirs = mknb(("code", "x = 1", id_a))
+        merged, conflict = NbGit.merge_cells(base, ours, theirs)
+        @test conflict
+        @test "y = 200" in [NbIO.cell_source(c) for c in merged["cells"]]
+    end
+
+    @testset "NbGit.flatten_nb: diff driver's outputs-ignored cell-source text view" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo(x) = x")])
+        nbpath = joinpath(cfg.root, "nbs", "core.ipynb")
+        text = NbGit.flatten_nb(nbpath)
+        @test occursin("foo(x) = x", text)
+        @test occursin("[code]", text)
+        @test NbGit.flatten_nb("/dev/null") == ""
+    end
+
+    @testset "NbGit: real end-to-end git integration (install_hooks, clean filter, merge, diff)" begin
+        @test Sys.which("git") !== nothing  # this machine has it; skip-worthy elsewhere
+        root = mktempdir()
+        write(joinpath(root, "Project.toml"), """
+        name = "GitIntegrationTest"
+        uuid = "00000000-0000-0000-0000-00000000f00d"
+        version = "0.1.0"
+
+        [nbjulia]
+        nbs_path = "nbs"
+        """)
+        mkpath(joinpath(root, "nbs"))
+        run(`git -C $root init -q -b main`)
+        run(`git -C $root config user.email test@test.com`)
+        run(`git -C $root config user.name test`)
+        cfg = Config.load_config(root)
+
+        NbGit.install_hooks(; cfg = cfg)
+        attrs = read(joinpath(root, ".gitattributes"), String)
+        @test occursin("filter=nbjulia-clean", attrs)
+        @test occursin("merge=nbjulia-notebook", attrs)
+        @test occursin("diff=nbjulia-notebook", attrs)
+        # idempotent: calling again doesn't duplicate attribute lines
+        NbGit.install_hooks(; cfg = cfg)
+        @test count("filter=nbjulia-clean", read(joinpath(root, ".gitattributes"), String)) == 1
+        @test occursin("NBJulia.clean_filter_main", read(`git -C $root config filter.nbjulia-clean.clean`, String))
+        @test occursin("NBJulia.merge_driver_main", read(`git -C $root config merge.nbjulia-notebook.driver`, String))
+        @test occursin("NBJulia.diff_driver_main", read(`git -C $root config diff.nbjulia-notebook.command`, String))
+
+        NbIO.write_nb(mk_nb([("code", "x = 1")]), joinpath(root, "nbs", "core.ipynb"))
+        run(`git -C $root add -A`)
+        run(`git -C $root commit -q -m base`)
+        # the clean filter ran on `git add`: committed blob's id was normalized
+        committed = read(`git -C $root show HEAD:nbs/core.ipynb`, String)
+        @test occursin("\"id\": \"cell-0\"", committed)
+
+        # a real conflicting merge: resolved as two labeled cells, exit code 1
+        run(`git -C $root checkout -q -b ours-branch`)
+        NbIO.write_nb(mk_nb([("code", "x = 100  # ours")]), joinpath(root, "nbs", "core.ipynb"))
+        run(`git -C $root commit -q -am ours-change`)
+        run(`git -C $root checkout -q main`)
+        run(`git -C $root checkout -q -b theirs-branch`)
+        NbIO.write_nb(mk_nb([("code", "x = 999  # theirs")]), joinpath(root, "nbs", "core.ipynb"))
+        run(`git -C $root commit -q -am theirs-change`)
+        run(`git -C $root checkout -q ours-branch`)
+        st = run(ignorestatus(`git -C $root merge theirs-branch`))
+        @test st.exitcode != 0
+        result = read(joinpath(root, "nbs", "core.ipynb"), String)
+        @test occursin("x = 100  # ours", result)
+        @test occursin("x = 999  # theirs", result)
+        @test occursin("merge conflict", result)
+        run(`git -C $root merge --abort`) # leave the repo in a clean state before continuing
+
+        # the diff driver engages for a plain working-tree `git diff`
+        run(`git -C $root checkout -q main`)
+        NbIO.write_nb(mk_nb([("code", "x = 42  # changed")]), joinpath(root, "nbs", "core.ipynb"))
+        diffout = read(`git -C $root diff -- nbs/core.ipynb`, String)
+        @test occursin("x = 42  # changed", diffout)
+        @test !occursin("\"cell_type\"", diffout) # flattened view, not raw JSON
     end
 
     @testset "real project smoke test: using NBJulia itself exports foo" begin
