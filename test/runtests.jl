@@ -1,7 +1,8 @@
 using NBJulia
-using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest
+using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs
 using Test
 using OrderedCollections
+using Markdown
 
 # ---------------------------------------------------------------------------
 # Test fixture helpers (self-contained — no real .ipynb files needed)
@@ -46,6 +47,24 @@ function temp_project(cells::Vector{Tuple{String,String}}; nbname = "core.ipynb"
     mkpath(joinpath(root, "src"))
     NbIO.write_nb(mk_nb(cells), joinpath(root, "nbs", nbname))
     return Config.load_config(root)
+end
+
+"Fixture module with known docstring/no-docstring cases for NbDocs tests."
+module DocsFixture
+"""
+    greet(name)
+
+Says hello to `name`.
+"""
+greet(name) = "Hello, $name!"
+
+"A simple point."
+struct Point
+    x::Int
+    y::Int
+end
+
+nodoc(x) = x
 end
 
 # ---------------------------------------------------------------------------
@@ -352,6 +371,50 @@ end
 
         NbIO.write_nb(mk_nb([("code", "@assert 1 == 1")]), joinpath(root, "nbs", "01_bad.ipynb"))
         @test NbTest.test_project(; cfg = cfg) == true  # now both pass
+    end
+
+    @testset "NbDocs.show_doc" begin
+        md1 = NbDocs.show_doc(DocsFixture.greet)
+        @test md1 isa Markdown.MD
+        s1 = string(md1)
+        @test occursin("greet", s1)
+        @test occursin("Says hello", s1)
+
+        md2 = NbDocs.show_doc(DocsFixture.Point)
+        @test occursin("simple point", string(md2))
+
+        md3 = NbDocs.show_doc(DocsFixture.nodoc)
+        @test occursin("No documentation found", string(md3))
+
+        md4 = NbDocs.show_doc("doesnotexist_xyz"; mod = DocsFixture)
+        s4 = string(md4)
+        @test occursin("does not exist", s4) || occursin("No documentation found", s4)
+
+        # name-string lookup form
+        md5 = NbDocs.show_doc("greet"; mod = DocsFixture)
+        @test occursin("Says hello", string(md5))
+
+        # index-based "defined in" footer
+        idx = Dict("greet" => NbDocs.SymbolEntry("greet", "core.jl", "00_core.ipynb", "abcd1234"))
+        md6 = NbDocs.show_doc(DocsFixture.greet; index = idx)
+        s6 = string(md6)
+        @test occursin("00_core.ipynb", s6)
+        @test occursin("abcd1234", s6)
+    end
+
+    @testset "NbDocs.build_symbol_index" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo(x) = x + 1"),
+            ("code", "#| export\nstruct Bar\n    x::Int\nend"),
+        ])
+        Export.export_project(; cfg = cfg)
+        idx = NbDocs.build_symbol_index(cfg)
+        @test Set(keys(idx)) == Set(["foo", "Bar"])
+        @test idx["foo"].src_file == "core.jl"
+        @test idx["foo"].nb_file == "core.ipynb"
+        @test !isempty(idx["foo"].cell_id)
+        @test idx["Bar"].src_file == "core.jl"
     end
 
     @testset "real project smoke test: using NBJulia itself exports foo" begin
