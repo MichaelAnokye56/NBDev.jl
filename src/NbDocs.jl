@@ -298,6 +298,14 @@ treated as silent — its value is exactly what's useful to show.
 function is_silent_definition(expr)
     expr isa Expr || return false
     h = expr.head
+    if h in (:block, :toplevel)
+        # `:toplevel` is how `Meta.parse` wraps a statement followed by a
+        # trailing `;` (confirmed empirically); `:block` is a `begin...end`
+        # grouping. Either way, judge silence by the last real statement —
+        # the same thing Julia itself would actually evaluate to.
+        stmts = filter(a -> !(a isa LineNumberNode), expr.args)
+        return !isempty(stmts) && is_silent_definition(last(stmts))
+    end
     h === :macrocall && return is_silent_definition(expr.args[end])
     h === :const && return is_silent_definition(expr.args[1])
     h in (:function, :struct, :abstract, :primitive, :macro) && return true

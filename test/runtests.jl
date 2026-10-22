@@ -167,6 +167,16 @@ end
                 qux(x) = x
             end
             """) == ["Inner", "qux"]
+
+        # The bug report this guards: `Meta.parse` wraps a statement
+        # followed by a trailing `;` in an `Expr(:toplevel, ...)` — a
+        # very ordinary Jupyter/Julia idiom to suppress a value (`foo(x) =
+        # x + 1;`) — which the walker had no case for at all, so the name
+        # was silently dropped from `export` even though the code itself
+        # was still written to the generated file.
+        @test nm("foo(x) = x + 1;") == ["foo"]
+        @test nm("struct Foo\n x::Int\nend;") == ["Foo"]
+        @test nm("a = 1; b = 2") == ["a", "b"]
     end
 
     @testset "self-import guard (catches a real loader deadlock at export time instead)" begin
@@ -240,6 +250,19 @@ end
 
         # Re-running against the already-marked file replaces the block in place, idempotently.
         @test !Export.update_main_module!(mainfile, res.relfiles, res.exportnames)
+    end
+
+    @testset "export_project: a semicolon-terminated cell (common Jupyter output-suppression idiom) still gets its name exported" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo(x) = x + 1;"),
+        ])
+        res = Export.export_project(; cfg = cfg)
+        @test "foo" in res.exportnames
+        written = read(joinpath(cfg.d["src_path"], "core.jl"), String)
+        @test occursin("foo(x) = x + 1;", written)
+        mainfile = joinpath(cfg.d["src_path"], cfg.lib_name * ".jl")
+        @test occursin("export foo", read(mainfile, String))
     end
 
     @testset "export_project: names grouped in a begin...end block are exported" begin
@@ -332,6 +355,51 @@ end
         res = Export.export_project(; cfg = cfg)
         @test isempty(res.relfiles)
         @test isempty(res.exportnames)
+    end
+
+    @testset "export_project: include order follows notebook discovery order, not alphabetical module name" begin
+        # The bug report this guards, confirmed by 4 independent stress-test
+        # agents with 4 different natural projects: a type defined in one
+        # notebook, referenced in a struct field's type annotation by a
+        # *later-numbered* notebook whose own module name happens to sort
+        # *before* the type-defining module's name alphabetically ("arithmetic"
+        # < "core") used to get `include`d first, failing precompilation with
+        # `UndefVarError: Pt not defined` since struct field types are
+        # resolved eagerly at `include` time, not lazily like a function body.
+        root = mktempdir()
+        write(joinpath(root, "Project.toml"), """
+        name = "OrderPkg"
+        uuid = "00000000-0000-0000-0000-00000000face"
+        version = "0.1.0"
+
+        [nbjulia]
+        nbs_path = "nbs"
+        src_path = "src"
+        """)
+        mkpath(joinpath(root, "nbs"))
+        NbIO.write_nb(
+            mk_nb([("code", "#| default_exp core"), ("code", "#| export\nstruct Pt\n    x::Int\nend")]),
+            joinpath(root, "nbs", "00_core.ipynb"),
+        )
+        NbIO.write_nb(
+            mk_nb([
+                ("code", "#| default_exp arithmetic"), # "arithmetic" < "core" alphabetically
+                ("code", "#| export\nstruct Line\n    a::Pt\n    b::Pt\nend"),
+            ]),
+            joinpath(root, "nbs", "01_arithmetic.ipynb"),
+        )
+        cfg = Config.load_config(root)
+        res = Export.export_project(; cfg = cfg)
+        @test res.relfiles == ["core.jl", "arithmetic.jl"] # notebook order, not ["arithmetic.jl", "core.jl"]
+
+        mainfile = joinpath(cfg.d["src_path"], "OrderPkg.jl")
+        maintxt = read(mainfile, String)
+        @test findfirst("include(\"core.jl\")", maintxt).start <
+              findfirst("include(\"arithmetic.jl\")", maintxt).start
+
+        # the real confirmation: the generated package actually precompiles.
+        out = read(`julia --project=$root -e 'using OrderPkg; println("loaded OK: ", OrderPkg.Line)'`, String)
+        @test occursin("loaded OK", out)
     end
 
     @testset "export_project: two notebooks appending to the same module" begin
@@ -585,6 +653,14 @@ end
         @test !silent("DEFAULT_TIMEOUT = 30")
         @test !silent("foo(1)")
         @test !silent("println(\"hi\")")
+
+        # trailing `;` (parses to `:toplevel`) and a `begin...end` block:
+        # silence is judged by the *last* real statement, same as what
+        # Julia itself would actually evaluate to.
+        @test silent("foo(x) = x + 1;")
+        @test !silent("x = 42;")
+        @test silent("begin\n y = 1\n foo(x) = x\nend")
+        @test !silent("begin\n foo(x) = x\n y = 1\nend")
     end
 
     @testset "render_notebook: full pipeline in an isolated temp project" begin

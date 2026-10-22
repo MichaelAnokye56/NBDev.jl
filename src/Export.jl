@@ -121,7 +121,14 @@ nbdev original, not fewer.
 function toplevel_names(expr)
     expr isa Expr || return String[]
     h = expr.head
-    if h in (:block, :quote)
+    if h in (:block, :quote, :toplevel)
+        # `:toplevel` specifically: `Meta.parse` wraps a statement in this
+        # head whenever it's followed by a trailing `;` (a very ordinary
+        # Jupyter/Julia idiom to suppress a value, e.g. `foo(x) = x + 1;`)
+        # — confirmed empirically, and confirmed to otherwise make that
+        # cell's code get written to the generated file (nothing strips
+        # the semicolon) while contributing zero names to `export`, with
+        # no error or warning of any kind.
         names = String[]
         for a in expr.args
             a isa LineNumberNode && continue
@@ -467,6 +474,22 @@ function export_project(; cfg::Config.NBConfig = Config.load_config())
     nbfiles = Config.find_notebooks(cfg)
     all_cells = Dict{String,Vector{Tuple{Any,String}}}()
     all_in_all = Dict{String,Vector{Tuple{Any,String}}}()
+    # The order each module name is *first* contributed to, by notebook
+    # discovery order (`Config.find_notebooks` sorts by filename, so a
+    # standard 00_/01_/02_ numbering already expresses the intended build
+    # order). Used below instead of an alphabetical-by-module-name sort —
+    # confirmed by 4 independent stress-test agents, each with a different
+    # natural project, that alphabetical ordering breaks precompilation
+    # whenever a struct field or method signature in one module eagerly
+    # references a type from an alphabetically-*later* module (e.g. a
+    # `core` module defining a type and an `arithmetic` module extending
+    # operators on it — "arithmetic" < "core" alphabetically, so the old
+    # code would `include` the operators before the type they operate on
+    # even exists). This is a heuristic, not real dependency analysis: it
+    # fixes every case where notebooks are numbered in the order their
+    # types are needed (the standard, encouraged convention), not an
+    # actually-reversed dependency against that numbering.
+    module_order = String[]
     failures = Tuple{String,Any}[]
     for nbpath in nbfiles
         try
@@ -481,6 +504,7 @@ function export_project(; cfg::Config.NBConfig = Config.load_config())
                     @warn "Notebook '$nbpath' uses `#| export` without a `#| default_exp` cell; skipping."
                     continue
                 end
+                haskey(all_cells, nm) || push!(module_order, nm)
                 append!(get!(all_cells, nm, Tuple{Any,String}[]), [(c, nbpath) for c in cells])
                 inall = get(exp.in_all, mod, Any[])
                 isempty(inall) || append!(get!(all_in_all, nm, Tuple{Any,String}[]), [(c, nbpath) for c in inall])
@@ -501,13 +525,12 @@ function export_project(; cfg::Config.NBConfig = Config.load_config())
     # notebook its export just because it's listed in the same directory.
     relfiles = String[]
     exportnames = String[]
-    for (nm, cells) in all_cells
-        relfile, names = write_module(cfg, nm, cells, get(all_in_all, nm, Tuple{Any,String}[]))
+    for nm in module_order
+        relfile, names = write_module(cfg, nm, all_cells[nm], get(all_in_all, nm, Tuple{Any,String}[]))
         push!(relfiles, relfile)
         append!(exportnames, names)
     end
-    sort!(relfiles)
-    exportnames = sort!(unique(exportnames))
+    exportnames = sort!(unique(exportnames)) # cosmetic only — export order never affects correctness
     mainfile = joinpath(cfg.d["src_path"], cfg.lib_name * ".jl")
     update_main_module!(mainfile, relfiles, exportnames)
     if !isempty(failures)
