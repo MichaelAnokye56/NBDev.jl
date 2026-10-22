@@ -102,7 +102,24 @@ function basename_of(x)
     x isa Symbol && return x
     x isa Expr || return nothing
     h = x.head
-    if h in (:curly, :(<:), :call, :(::), :where)
+    if h === :call
+        callee = x.args[1]
+        # A `:(::)`-headed callee is a functor/callable-object definition —
+        # `(sm::T)(args...) = ...` or the anonymous-constructor idiom
+        # `(::Type{T})(args...) = ...`. Confirmed empirically (both AST
+        # shapes checked directly): the thing in that position is a typed
+        # *receiver*, not a name this definition introduces — recursing
+        # into it the same way a plain `foo(x)` call's name is found used
+        # to misidentify the receiver's parameter name (or, for the
+        # anonymous form, the literal word "Type") as a new export. This
+        # is distinct from the legitimate `function foo(x)::T ... end`
+        # return-type-annotation case, which has `:(::)` as the *outer*
+        # head wrapping a `:call` — not `:(::)` sitting *inside* one as
+        # its callee — so that case still falls through to the branch
+        # below unaffected.
+        (callee isa Expr && callee.head === :(::)) && return nothing
+        return basename_of(callee)
+    elseif h in (:curly, :(<:), :(::), :where)
         return basename_of(x.args[1])
     end
     return nothing # e.g. `:.`  (qualified name like `Base.show`) — extends another module's function

@@ -142,6 +142,23 @@ end
         @test nm("macro foo(x)\n x\nend") == ["@foo"]
         @test nm("Base.show(io::IO, x::Foo) = print(io, \"Foo\")") == []
         @test nm("println(\"side effect\")") == []
+
+        # The bug report this guards: a functor/callable-struct definition
+        # (making instances of an existing type callable) used to
+        # misidentify the typed *receiver* as a new name — the parameter
+        # name itself for `(sm::T)(...)`, or the literal word "Type" for
+        # the anonymous-constructor idiom `(::Type{T})(...)`. Neither form
+        # introduces any new top-level name at all; both extend methods on
+        # an already-existing type, the same way `Base.foo(...) = ...`
+        # does, just without the qualified-name prefix.
+        @test nm("(sm::SeafloorMap)(x) = 1") == []
+        @test nm("function (sm::SeafloorMap)(x)\n    1\nend") == []
+        @test nm("(::Type{Quaternion})(x) = Quaternion(x, 0)") == []
+        # ...but the legitimate `function foo(x)::T ... end` return-type
+        # annotation (a different AST shape — `:(::)` wraps the whole call,
+        # rather than sitting inside it as the callee) still correctly
+        # finds "foo".
+        @test nm("function foo(x)::Int\n x\nend") == ["foo"]
         @test nm("\"\"\"a doc\"\"\"\nfoo(x) = x") == ["foo"]
 
         # The bug report this guards: names defined inside a `begin...end`
