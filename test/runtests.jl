@@ -1,5 +1,5 @@
 using NBJulia
-using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto, NbClean, NbGit
+using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto, NbClean, NbGit, NbSync, NbRelease
 using Test
 using OrderedCollections
 using Markdown
@@ -54,6 +54,16 @@ function temp_project(cells::Vector{Tuple{String,String}}; nbname = "core.ipynb"
     mkpath(joinpath(root, "src"))
     NbIO.write_nb(mk_nb(cells), joinpath(root, "nbs", nbname))
     return Config.load_config(root)
+end
+
+"`git init` (on `main`) a `temp_project`-produced `cfg.root`, with a throwaway user identity, and one initial commit of whatever's already there."
+function git_init!(cfg)
+    run(`git -C $(cfg.root) init -q -b main`)
+    run(`git -C $(cfg.root) config user.email test@test.com`)
+    run(`git -C $(cfg.root) config user.name test`)
+    run(`git -C $(cfg.root) add -A`)
+    run(`git -C $(cfg.root) commit -q -m "initial commit"`)
+    return cfg
 end
 
 "Fixture module with known docstring/no-docstring cases for NbDocs tests."
@@ -792,6 +802,111 @@ end
         diffout = read(`git -C $root diff -- nbs/core.ipynb`, String)
         @test occursin("x = 42  # changed", diffout)
         @test !occursin("\"cell_type\"", diffout) # flattened view, not raw JSON
+    end
+
+    @testset "NbSync.sync_project: hand-edits in the generated file round-trip back to the notebook" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo(x) = x + 1"),
+            ("code", "#| exporti\nhelper() = 1"),
+        ])
+        Export.export_project(; cfg = cfg)
+        genfile = joinpath(cfg.d["src_path"], "core.jl")
+        txt = read(genfile, String)
+        txt = replace(txt, "foo(x) = x + 1" => "foo(x) = x + 100  # hand-edited")
+        write(genfile, txt)
+
+        result = NbSync.sync_project(; cfg = cfg)
+        @test length(result.updated) == 1
+
+        nb = NbIO.read_nb(joinpath(cfg.root, "nbs", "core.ipynb"))
+        srcs = [NbIO.cell_source(c) for c in nb["cells"]]
+        @test any(s -> occursin("foo(x) = x + 100  # hand-edited", s), srcs)
+        @test any(s -> startswith(s, "#| export\n"), srcs) # directive line preserved verbatim
+        @test any(s -> occursin("helper() = 1", s), srcs)  # untouched cell left alone
+
+        # idempotent: nothing left to sync once the notebook matches the file
+        result2 = NbSync.sync_project(; cfg = cfg)
+        @test isempty(result2.updated)
+    end
+
+    @testset "NbSync.sync_project: a block whose cell id no longer exists is skipped, not errored" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo(x) = x")])
+        Export.export_project(; cfg = cfg)
+        genfile = joinpath(cfg.d["src_path"], "core.jl")
+        write(genfile, read(genfile, String) * "\n# %% ../nbs/core.ipynb #deadbeef\nghost() = 1\n")
+        result = NbSync.sync_project(; cfg = cfg)
+        @test isempty(result.updated) # the real cell didn't change; the ghost block has no matching cell
+    end
+
+    @testset "NbRelease.bump_version: rewrites only the version line" begin
+        cfg = temp_project([("code", "#| default_exp core")])
+        before = read(joinpath(cfg.root, "Project.toml"), String)
+        @test occursin("version = \"0.1.0\"", before)
+
+        newver = NbRelease.bump_version(; cfg = cfg, level = :patch)
+        @test newver == "0.1.1"
+        after = read(joinpath(cfg.root, "Project.toml"), String)
+        @test occursin("name = \"TestPkg\"", after)     # rest of the file untouched
+        @test occursin("nbs_path = \"nbs\"", after)
+
+        newver2 = NbRelease.bump_version(; cfg = Config.load_config(cfg.root), level = :minor)
+        @test newver2 == "0.2.0"
+        newver3 = NbRelease.bump_version(; cfg = Config.load_config(cfg.root), level = :major)
+        @test newver3 == "1.0.0"
+
+        @test_throws ErrorException NbRelease.bump_version(; cfg = cfg, level = :nonsense)
+    end
+
+    @testset "NbRelease.changelog: lists commit subjects, prepends on a second call" begin
+        cfg = temp_project([("code", "#| default_exp core")])
+        git_init!(cfg)
+        run(`git -C $(cfg.root) commit -q --allow-empty -m "add a feature"`)
+
+        path = NbRelease.changelog(; cfg = cfg)
+        text = read(path, String)
+        @test occursin("## v0.1.0", text)
+        @test occursin("- initial commit", text)
+        @test occursin("- add a feature", text)
+
+        NbRelease.bump_version(; cfg = Config.load_config(cfg.root), level = :patch)
+        run(`git -C $(cfg.root) commit -q --allow-empty -m "another change"`)
+        NbRelease.changelog(; cfg = Config.load_config(cfg.root))
+        text2 = read(path, String)
+        @test occursin("## v0.1.1", text2)
+        @test findfirst("## v0.1.1", text2).start < findfirst("## v0.1.0", text2).start # newest section on top
+    end
+
+    @testset "NbRelease.prep_release: full export+test+bump+changelog+commit cycle" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo() = 1")])
+        git_init!(cfg)
+
+        newver = NbRelease.prep_release(; cfg = Config.load_config(cfg.root), level = :minor)
+        @test newver == "0.2.0"
+        @test occursin("version = \"0.2.0\"", read(joinpath(cfg.root, "Project.toml"), String))
+        @test isfile(joinpath(cfg.root, "CHANGELOG.md"))
+        @test isfile(joinpath(cfg.d["src_path"], "core.jl")) # export_project ran as part of prep_release
+
+        log = read(`git -C $(cfg.root) log --oneline`, String)
+        @test occursin("Release v0.2.0", log)
+        status = read(`git -C $(cfg.root) status --short`, String)
+        @test isempty(strip(status)) # nothing left uncommitted
+    end
+
+    @testset "NbRelease.prep_release: aborts (no bump, no commit) if a notebook fails testing" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nfoo() = 1"),
+            ("code", "@assert 1 == 2"),
+        ])
+        git_init!(cfg)
+        before = read(joinpath(cfg.root, "Project.toml"), String)
+
+        @test_throws ErrorException NbRelease.prep_release(; cfg = Config.load_config(cfg.root))
+        @test read(joinpath(cfg.root, "Project.toml"), String) == before
+        @test !isfile(joinpath(cfg.root, "CHANGELOG.md"))
+        log = read(`git -C $(cfg.root) log --oneline`, String)
+        @test !occursin("Release", log)
     end
 
     @testset "real project smoke test: using NBJulia itself exports foo" begin
