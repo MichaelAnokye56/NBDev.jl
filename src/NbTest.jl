@@ -166,7 +166,17 @@ function test_project(;
     failures = Tuple{String,CellError}[]
     for f in files
         do_print && println("Starting $(f)")
-        passed, elapsed, err = test_nb(f; skip_flags, force_flags)
+        # A notebook that fails to even load (malformed JSON, etc.) used to
+        # throw straight out of this loop, aborting every *other*
+        # notebook's test run too, with the failure never naming which file
+        # was at fault (confirmed by a stress-test agent). Report it the
+        # same way a cell failure already is — idx/id `0`/`"?"` mark
+        # "failed before any cell ran" — instead.
+        passed, elapsed, err = try
+            test_nb(f; skip_flags, force_flags)
+        catch e
+            false, 0.0, CellError(0, "?", e, catch_backtrace())
+        end
         if passed
             do_print && println("- Completed $(f) ($(round(elapsed; digits = 2))s)")
         else

@@ -63,8 +63,15 @@ function Process.handlers(p::ExportModuleProc)
         push!(get!(p.modules, mod, Any[]), cell)
         push!(get!(p.in_all, mod, Any[]), cell)
     end
+    default_exp_fn = (cell, args...) -> begin
+        isempty(args) && error(
+            "`#| default_exp` on cell $(get(cell, "id", "?")) has no module name " *
+            "(expected e.g. `#| default_exp core`).",
+        )
+        p.default_exp = String(args[1])
+    end
     return Dict{String,Function}(
-        "default_exp" => (cell, args...) -> (p.default_exp = String(args[1])),
+        "default_exp" => default_exp_fn,
         "export" => export_fn,
         "exports" => export_fn,
         "exporti" => exporti_fn,
@@ -170,7 +177,20 @@ function toplevel_defined_names(src::AbstractString)
     return names
 end
 
-"Public names (skipping leading-`_`) that `cells`' code defines, deduplicated, order preserved."
+"""
+Is `nm` safe to put in a generated `export` statement? Never one
+containing a `.` — not just a qualified name (`Base.show`, already
+excluded earlier by `basename_of`), but also Julia's own broadcast-
+operator mangling of an *unquoted* `Base.<op>` extension: `Base.==(a,b) =
+...` (missing the `:()` quoting) parses as the broadcast call `Base .==
+(a, b)`, so the raw AST's "name this defines" really is the literal
+`Symbol(".==")` — confirmed empirically, and confirmed to otherwise
+produce an unparseable `export .==` that fails the whole package's
+precompilation.
+"""
+is_exportable_name(nm::AbstractString) = !occursin('.', nm)
+
+"Public names (skipping leading-`_`, and anything `is_exportable_name` rejects) that `cells`' code defines, deduplicated, order preserved."
 function collect_exported_names(cells)
     names = String[]
     for cell in cells
@@ -178,7 +198,8 @@ function collect_exported_names(cells)
         src = NbIO.cell_source(cell)
         src === nothing && continue
         for nm in toplevel_defined_names(src)
-            startswith(nm, "_") || push!(names, nm)
+            (startswith(nm, "_") || !is_exportable_name(nm)) && continue
+            push!(names, nm)
         end
     end
     return unique(names)
@@ -190,13 +211,27 @@ end
 # it does not raise a clean error), so catch it here instead, at export time.
 # ---------------------------------------------------------------------------
 
-"Module name(s) a top-level, *non-relative* `using`/`import` clause in `expr` refers to (empty if `expr` isn't one, or every clause is relative, e.g. `.Foo`)."
+"""
+Module name(s) a top-level, *non-relative* `using`/`import` clause in
+`expr` refers to (empty if `expr` isn't one, or every clause is relative,
+e.g. `.Foo`). Unwraps both the `using X: name` form (`:(:)`-headed) and
+the `import X as Y`/`using X as Y` renaming form (`:as`-headed — missed
+entirely before this fix, confirmed by a stress-test agent: `import
+ToyLangDemo as TLD` is an entirely ordinary, easy-to-reach-for way to
+import a package under a shorter local name, and it silently bypassed
+`check_no_self_import`).
+"""
 function imported_package_names(expr)
     expr isa Expr || return String[]
     expr.head in (:using, :import) || return String[]
     names = String[]
     for clause in expr.args
-        modexpr = (clause isa Expr && clause.head === :(:)) ? clause.args[1] : clause
+        modexpr = clause
+        if modexpr isa Expr && modexpr.head === :as
+            modexpr = modexpr.args[1]
+        elseif modexpr isa Expr && modexpr.head === :(:)
+            modexpr = modexpr.args[1]
+        end
         if modexpr isa Expr && modexpr.head === :(.) && length(modexpr.args) == 1 && modexpr.args[1] isa Symbol
             push!(names, string(modexpr.args[1]))
         end
@@ -349,6 +384,48 @@ end
 # ---------------------------------------------------------------------------
 
 """
+Every directive name nbjulia actually recognizes anywhere in the
+pipeline (export-routing, test skip/force flags, hide, docs). Used only
+by `warn_unknown_directives` — an unrecognized `#|`-prefixed line is
+still treated as a plain comment everywhere else (permissive by design),
+but a typo in an *export*-routing directive specifically (`#|exprot` for
+`#| export`) makes a cell's code vanish from the generated package with
+no other signal at all, which is worth a warning.
+"""
+const KNOWN_DIRECTIVES = Set([
+    "default_exp", "export", "exports", "exporti", "exportd", "hide", "eval", "notest",
+])
+
+"""
+    warn_unknown_directives(nbpath, nb)
+
+`@warn` once per cell for every `#|`-prefixed comment line whose
+directive name isn't in `KNOWN_DIRECTIVES` — almost always a typo (e.g.
+`#|exprot`/`#| exoprt` for `#| export`) that would otherwise silently drop
+that cell's code from the exported package with zero other sign anything
+went wrong (confirmed by ~5 of the 10 independent stress-test agents).
+"""
+function warn_unknown_directives(nbpath::AbstractString, nb)
+    for cell in get(nb, "cells", Any[])
+        get(cell, "cell_type", "") == "code" || continue
+        src = NbIO.cell_source(cell)
+        src === nothing && continue
+        leading, _ = NbIO.partition_source(src)
+        for l in leading
+            occursin(NbIO.DIR_PRE, l) || continue
+            d = NbIO.parse_directive(l)
+            d === nothing && continue
+            d.first in KNOWN_DIRECTIVES && continue
+            @warn "$(nbpath) (cell $(get(cell, "id", "?"))): unrecognized directive `#| $(d.first)` — " *
+                  "treated as a plain comment, not a known nbjulia directive, so this cell's code is " *
+                  "NOT routed into any export bucket. Typo? Known directives: " *
+                  join(sort(collect(KNOWN_DIRECTIVES)), ", ") * "."
+        end
+    end
+    return nothing
+end
+
+"""
     nb_export(nbpath; cfg = Config.load_config(dirname(nbpath)))
 
 Export a single notebook's `#| export`/`#| exporti`/... cells into their
@@ -359,6 +436,7 @@ to across notebooks).
 """
 function nb_export(nbpath::AbstractString; cfg::Config.NBConfig = Config.load_config(dirname(nbpath)))
     nb = NbIO.read_nb(nbpath)
+    warn_unknown_directives(nbpath, nb)
     exp = ExportModuleProc()
     Process.process!(Process.NBProcessor(nb, exp))
     written = String[]
@@ -389,22 +467,38 @@ function export_project(; cfg::Config.NBConfig = Config.load_config())
     nbfiles = Config.find_notebooks(cfg)
     all_cells = Dict{String,Vector{Tuple{Any,String}}}()
     all_in_all = Dict{String,Vector{Tuple{Any,String}}}()
+    failures = Tuple{String,Any}[]
     for nbpath in nbfiles
-        nb = NbIO.read_nb(nbpath)
-        exp = ExportModuleProc()
-        Process.process!(Process.NBProcessor(nb, exp))
-        for (mod, cells) in exp.modules
-            has_code_cell(cells) || continue
-            nm = mod == "#" ? exp.default_exp : mod
-            if nm === nothing
-                @warn "Notebook '$nbpath' uses `#| export` without a `#| default_exp` cell; skipping."
-                continue
+        try
+            nb = NbIO.read_nb(nbpath)
+            warn_unknown_directives(nbpath, nb)
+            exp = ExportModuleProc()
+            Process.process!(Process.NBProcessor(nb, exp))
+            for (mod, cells) in exp.modules
+                has_code_cell(cells) || continue
+                nm = mod == "#" ? exp.default_exp : mod
+                if nm === nothing
+                    @warn "Notebook '$nbpath' uses `#| export` without a `#| default_exp` cell; skipping."
+                    continue
+                end
+                append!(get!(all_cells, nm, Tuple{Any,String}[]), [(c, nbpath) for c in cells])
+                inall = get(exp.in_all, mod, Any[])
+                isempty(inall) || append!(get!(all_in_all, nm, Tuple{Any,String}[]), [(c, nbpath) for c in inall])
             end
-            append!(get!(all_cells, nm, Tuple{Any,String}[]), [(c, nbpath) for c in cells])
-            inall = get(exp.in_all, mod, Any[])
-            isempty(inall) || append!(get!(all_in_all, nm, Tuple{Any,String}[]), [(c, nbpath) for c in inall])
+        catch e
+            # A notebook that fails to parse/load (malformed JSON, a
+            # directive misuse like `#| default_exp` with no value, etc.)
+            # used to abort the *entire* project's export with an error
+            # that never named which file was at fault (confirmed by a
+            # stress-test agent). Collect failures and name every one of
+            # them in one clear error after giving every other notebook a
+            # chance to export.
+            push!(failures, (nbpath, e))
         end
     end
+    # Write whatever the *good* notebooks contributed before reporting any
+    # failures — a malformed sibling notebook shouldn't deny every other
+    # notebook its export just because it's listed in the same directory.
     relfiles = String[]
     exportnames = String[]
     for (nm, cells) in all_cells
@@ -416,6 +510,14 @@ function export_project(; cfg::Config.NBConfig = Config.load_config())
     exportnames = sort!(unique(exportnames))
     mainfile = joinpath(cfg.d["src_path"], cfg.lib_name * ".jl")
     update_main_module!(mainfile, relfiles, exportnames)
+    if !isempty(failures)
+        io = IOBuffer()
+        println(io, "export_project: the following notebook(s) could not be processed:")
+        for (nbpath, e) in failures
+            println(io, "\t", nbpath, ": ", sprint(showerror, e))
+        end
+        error(String(take!(io)))
+    end
     return (; relfiles, exportnames)
 end
 

@@ -159,7 +159,20 @@ function show_doc(
     nm = _doc_name(x)
     lookupmod = _doc_module(x, mod)
     d = try
-        Core.eval(lookupmod, Meta.parse("@doc " * nm))
+        # Built as an `Expr`, not `Meta.parse("@doc " * nm)`: a name that
+        # collides with a Julia keyword (e.g. a function named `export`,
+        # only reachable via `var"export"`) fails to parse as a bare `@doc
+        # <name>` string, and that failure was silently swallowed by the
+        # surrounding try/catch, always falling through to "no docstring
+        # found" even when a real one exists (confirmed by a stress-test
+        # agent). Building `Mod.name` directly as a qualified-access `Expr`
+        # (not through the parser at all) sidesteps the keyword lexing
+        # issue entirely, and — confirmed empirically — also correctly
+        # resolves to the user's own binding rather than Julia's built-in
+        # documentation for the keyword itself, which a bare `Symbol(nm)`
+        # lookup prefers whenever `nm` happens to also be a keyword.
+        qualified = Expr(:., lookupmod, QuoteNode(Symbol(nm)))
+        Core.eval(lookupmod, Expr(:macrocall, Symbol("@doc"), LineNumberNode(@__LINE__, Symbol(@__FILE__)), qualified))
     catch
         nothing
     end
@@ -293,12 +306,19 @@ function is_silent_definition(expr)
 end
 
 """
-    render_notebook(nbpath, cfg; index=build_symbol_index(cfg), default_eval=true)
+    render_notebook(nbpath, cfg; index=build_symbol_index(cfg), default_eval=true,
+                     skip_flags=Set(["notest"]), force_flags=Set{String}())
 
 Render notebook `nbpath` to a Quarto-markdown (`.qmd`) string: executes
 its code cells in document order, in a fresh sandbox module (same
 `Core.eval`+`Meta.parseall` approach as `NbTest.test_nb`, same eval-
-participation cascade via `NbTest.does_cell_eval`), and for each cell:
+participation cascade via `NbTest.does_cell_eval` — `skip_flags`/
+`force_flags` default to the exact same values `test_nb`/`test_project`
+use, so a `#| notest` cell is skipped here too, not just during testing;
+this used to default to always-empty sets, so `#| notest` was silently
+*ignored* during docs rendering even though `test_project` correctly
+skipped the same cell — confirmed by a stress-test agent, and a direct
+contradiction of this very docstring's own claim), and for each cell:
 
 - a markdown cell's source is emitted as-is (unless `#| hide`);
 - a code cell's source is emitted as a fenced `julia` block unless its
@@ -321,6 +341,8 @@ function render_notebook(
     cfg::Config.NBConfig;
     index::Dict{String,SymbolEntry} = build_symbol_index(cfg),
     default_eval::Bool = true,
+    skip_flags::AbstractSet{String} = Set(["notest"]),
+    force_flags::AbstractSet{String} = Set{String}(),
 )
     nb = NbIO.read_nb(nbpath)
     already = explicitly_shown_names(nb)
@@ -343,7 +365,7 @@ function render_notebook(
         silent = !isempty(exprs) && is_silent_definition(last(exprs))
 
         value, errtext = nothing, nothing
-        if does_cell_eval(cell, default_eval)
+        if does_cell_eval(cell, default_eval, skip_flags, force_flags)
             try
                 value = Core.eval(mod, Meta.parseall(src))
             catch e

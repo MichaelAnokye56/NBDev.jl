@@ -82,6 +82,11 @@ struct Point
 end
 
 nodoc(x) = x
+
+"doc for the keyword-colliding function"
+function var"export"(x)
+    x
+end
 end
 
 # ---------------------------------------------------------------------------
@@ -172,6 +177,13 @@ end
         @test Export.imported_package_names(parsed("using .MyLib")) == []  # relative — not a self-import risk
         @test Export.imported_package_names(parsed("import MyLib")) == ["MyLib"]
         @test Export.imported_package_names(parsed("foo(x) = x")) == []
+        # `import X as Y` used to bypass the guard entirely (confirmed by a
+        # stress-test agent) — an ordinary, easy-to-reach-for import form,
+        # not an exotic one. (Bare `using X as Y` isn't valid Julia syntax
+        # at all — renaming via `using` requires the colon form, `using X:
+        # X as Y` — so only the `import` form needs covering here.)
+        @test Export.imported_package_names(parsed("import MyLib as ML")) == ["MyLib"]
+        @test_throws ErrorException Export.check_no_self_import("import MyLib as ML", "MyLib", "ctx")
 
         @test_nowarn Export.check_no_self_import("using Other", "MyLib", "ctx")
         @test_throws ErrorException Export.check_no_self_import("using MyLib", "MyLib", "ctx")
@@ -249,6 +261,70 @@ end
         written = read(joinpath(cfg.d["src_path"], "core.jl"), String)
         @test occursin("abstract type Shape end", written)
         @test occursin("struct Circle <: Shape", written)
+    end
+
+    @testset "collect_exported_names / is_exportable_name: unquoted Base.<op> extensions never produce an invalid export" begin
+        # `Base.==(a,b) = true` (missing the `:()` quoting) parses as the
+        # broadcast call `Base .== (a, b)` — its "name" really is the
+        # literal `.==`, which used to flow straight into `export .==`
+        # and fail the whole package's precompilation (confirmed empirically).
+        @test Export.toplevel_defined_names("Base.==(a::Int,b::Int) = true") == [".=="]
+        @test !Export.is_exportable_name(".==")
+        @test Export.is_exportable_name("foo")
+        @test Export.is_exportable_name("@mymacro")
+
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#| export\nstruct Pt\n    x::Int\nend\nBase.==(a::Pt,b::Pt) = a.x==b.x"),
+        ])
+        res = Export.export_project(; cfg = cfg)
+        @test "Pt" in res.exportnames
+        @test !(".==" in res.exportnames)
+        mainfile = joinpath(cfg.d["src_path"], cfg.lib_name * ".jl")
+        maintxt = read(mainfile, String)
+        @test !occursin(".==", maintxt) # the generated export statement must stay valid Julia
+    end
+
+    @testset "nb_export / export_project: `#| default_exp` with no value gives a clear error, not a raw BoundsError" begin
+        cfg = temp_project([("code", "#| default_exp")])
+        nbpath = joinpath(cfg.root, "nbs", "core.ipynb")
+        @test_throws ErrorException Export.nb_export(nbpath; cfg = cfg)
+        try
+            Export.nb_export(nbpath; cfg = cfg)
+        catch e
+            @test !(e isa BoundsError)
+            @test occursin("default_exp", sprint(showerror, e))
+        end
+    end
+
+    @testset "export_project: one malformed notebook's error names the file and doesn't block the others" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo() = 1")])
+        write(joinpath(cfg.root, "nbs", "bad.ipynb"), "{ not valid json")
+        err = try
+            Export.export_project(; cfg = cfg)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        msg = sprint(showerror, err)
+        @test occursin("bad.ipynb", msg) # names the offending file
+        # the good notebook was still exported as part of the same run
+        @test isfile(joinpath(cfg.d["src_path"], "core.jl"))
+    end
+
+    @testset "Export.warn_unknown_directives: a typo'd directive warns instead of silently vanishing" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#|exprot\ntypo_fn() = 1"),
+            ("code", "#| export\ngood_fn() = 2"),
+        ])
+        nbpath = joinpath(cfg.root, "nbs", "core.ipynb")
+        @test_logs (:warn, r"exprot") match_mode = :any Export.nb_export(nbpath; cfg = cfg)
+        # and the code really is dropped, confirming the warning is accurate, not spurious
+        written = read(joinpath(cfg.d["src_path"], "core.jl"), String)
+        @test occursin("good_fn", written)
+        @test !occursin("typo_fn", written)
     end
 
     @testset "export_project: index-style markdown-only notebook is silently skipped" begin
@@ -390,6 +466,14 @@ end
         @test NbTest.test_project(; cfg = cfg) == true  # now both pass
     end
 
+    @testset "test_project: a malformed notebook fails cleanly, doesn't abort the other notebooks' tests" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "@assert 1 == 1")])
+        write(joinpath(cfg.root, "nbs", "bad.ipynb"), "{ not valid json")
+        @test NbTest.test_project(; cfg = cfg) == false
+        passed, _, _ = NbTest.test_nb(joinpath(cfg.root, "nbs", "core.ipynb"))
+        @test passed # the good notebook is unaffected by its malformed sibling
+    end
+
     @testset "NbDocs.show_doc" begin
         md1 = NbDocs.show_doc(DocsFixture.greet)
         @test md1 isa Markdown.MD
@@ -406,6 +490,17 @@ end
         md4 = NbDocs.show_doc("doesnotexist_xyz"; mod = DocsFixture)
         s4 = string(md4)
         @test occursin("does not exist", s4) || occursin("No documentation found", s4)
+
+        # a name that collides with a Julia keyword (reachable only via
+        # `var"export"`) used to silently fail — `Meta.parse("@doc " *
+        # "export")` chokes on the keyword, and the fallback to "no
+        # docstring found" hid a real docstring that does exist. Confirmed
+        # by a stress-test agent; also confirmed separately that a bare
+        # `Symbol`-based lookup resolves to the *keyword's* built-in doc
+        # instead of the user's binding, so this must go through the
+        # qualified `Mod.name` form, not just avoid the parser.
+        md5 = NbDocs.show_doc(DocsFixture.var"export")
+        @test occursin("doc for the keyword-colliding function", string(md5))
 
         # name-string lookup form
         md5 = NbDocs.show_doc("greet"; mod = DocsFixture)
@@ -545,6 +640,23 @@ end
         @test occursin("callout-warning", qmd)
         @test occursin("boom", qmd)
         @test occursin("42", qmd)  # the cell *after* the error still rendered
+    end
+
+    @testset "render_notebook: #| notest is skipped, matching test_nb — not run (and not blown up on) during docs rendering" begin
+        cfg = temp_project([
+            ("code", "#| default_exp core"),
+            ("code", "#|notest\nerror(\"should never run during docs rendering either\")"),
+            ("code", "y = 42"),
+        ])
+        nbpath = joinpath(cfg.d["nbs_path"], "core.ipynb")
+        # test_nb already correctly skips this cell (pre-existing behavior) —
+        # confirm render_notebook now does too, instead of running it and
+        # leaking the error into the rendered docs.
+        passed, _, _ = NbTest.test_nb(nbpath)
+        @test passed
+        qmd = NbDocs.render_notebook(nbpath, cfg)
+        @test !occursin("callout-warning", qmd) # not executed, so no error callout — the real signal
+        @test occursin("42", qmd)
     end
 
     @testset "NbQuarto.stage_docs" begin
@@ -710,6 +822,15 @@ end
         @test "x = 100" in sources && "x = 999" in sources
         @test "y = 2" in sources
         @test any(s -> s !== nothing && occursin("merge conflict", s), sources)
+        # the two conflicting alternatives (same id_a on both sides, as
+        # clean_ids' position-based renumbering would produce) must come out
+        # with distinct ids — confirmed by 3 stress-test agents to otherwise
+        # break the id-uniqueness invariant sync_project/build_symbol_index
+        # rely on.
+        conflict_cells = [c for c in merged["cells"] if NbIO.cell_source(c) in ("x = 100", "x = 999")]
+        @test length(conflict_cells) == 2
+        @test conflict_cells[1]["id"] != conflict_cells[2]["id"]
+        @test conflict_cells[1]["id"] != id_a && conflict_cells[2]["id"] != id_a
 
         # ours added a new cell, theirs untouched -> addition kept, no conflict
         new_id = NbIO.new_cell_id()
@@ -804,6 +925,29 @@ end
         @test !occursin("\"cell_type\"", diffout) # flattened view, not raw JSON
     end
 
+    @testset "NbSync.parse_provenance_blocks: matches clean_ids' \"cell-N\" format, not just hex ids" begin
+        @test NbSync.parse_provenance_blocks("# %% ../nbs/x.ipynb #60b40df5\nfoo()=1\n") ==
+              [("../nbs/x.ipynb", "60b40df5", "foo()=1")]
+        @test NbSync.parse_provenance_blocks("# %% ../nbs/x.ipynb #cell-5\nfoo()=1\n") ==
+              [("../nbs/x.ipynb", "cell-5", "foo()=1")]
+    end
+
+    @testset "NbSync.sync_project: still works after clean_project has renumbered cell ids to cell-N" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo(x) = x")])
+        Export.export_project(; cfg = cfg)
+        NbClean.clean_project(; cfg = cfg) # renumbers ids to cell-0, cell-1, ... (the default clean_ids=true)
+        Export.export_project(; cfg = cfg) # re-export so the generated file's provenance headers use the new ids
+
+        genfile = joinpath(cfg.d["src_path"], "core.jl")
+        @test occursin(r"#cell-\d+", read(genfile, String))
+        write(genfile, replace(read(genfile, String), "foo(x) = x" => "foo(x) = x * 2  # hand-edited"))
+
+        result = NbSync.sync_project(; cfg = cfg)
+        @test length(result.updated) == 1
+        nb = NbIO.read_nb(joinpath(cfg.root, "nbs", "core.ipynb"))
+        @test any(c -> occursin("x * 2  # hand-edited", something(NbIO.cell_source(c), "")), nb["cells"])
+    end
+
     @testset "NbSync.sync_project: hand-edits in the generated file round-trip back to the notebook" begin
         cfg = temp_project([
             ("code", "#| default_exp core"),
@@ -858,6 +1002,17 @@ end
         @test_throws ErrorException NbRelease.bump_version(; cfg = cfg, level = :nonsense)
     end
 
+    @testset "NbRelease.bump_version: tolerates scaffold's own \"X.Y.Z-DEV\" default version" begin
+        # NBJulia.scaffold (via PkgTemplates) writes exactly this by default;
+        # every one of the 10 independent stress-test agents hit this crash
+        # on the very first `prep_release()`/`bump_version()` call.
+        cfg = temp_project([("code", "#| default_exp core")])
+        txt = read(joinpath(cfg.root, "Project.toml"), String)
+        write(joinpath(cfg.root, "Project.toml"), replace(txt, "version = \"0.1.0\"" => "version = \"1.0.0-DEV\""))
+        newver = NbRelease.bump_version(; cfg = Config.load_config(cfg.root), level = :patch)
+        @test newver == "1.0.1" # the -DEV tag is correctly dropped, not carried forward
+    end
+
     @testset "NbRelease.changelog: lists commit subjects, prepends on a second call" begin
         cfg = temp_project([("code", "#| default_exp core")])
         git_init!(cfg)
@@ -875,6 +1030,31 @@ end
         text2 = read(path, String)
         @test occursin("## v0.1.1", text2)
         @test findfirst("## v0.1.1", text2).start < findfirst("## v0.1.0", text2).start # newest section on top
+    end
+
+    @testset "NbRelease.changelog: falls back to the last Release commit (not full history) when there's no git tag" begin
+        # prep_release deliberately never tags, so without this fix every
+        # changelog call after the first would re-list the entire repo
+        # history (confirmed by 4 stress-test agents) — scoping to "since
+        # the last Release commit" instead fixes that without needing to
+        # start tagging.
+        cfg = temp_project([("code", "#| default_exp core")])
+        git_init!(cfg)
+        NbRelease.bump_version(; cfg = Config.load_config(cfg.root), level = :patch)
+        NbRelease.changelog(; cfg = Config.load_config(cfg.root))
+        run(`git -C $(cfg.root) add -A`)
+        run(`git -C $(cfg.root) commit -q -m "Release v0.1.1"`)
+        run(`git -C $(cfg.root) commit -q --allow-empty -m "a later change"`)
+
+        NbRelease.bump_version(; cfg = Config.load_config(cfg.root), level = :patch)
+        path = NbRelease.changelog(; cfg = Config.load_config(cfg.root))
+        text = read(path, String)
+        idx_new = findfirst("## v0.1.2", text).start
+        idx_old = findfirst("## v0.1.1", text).start
+        new_section = text[idx_new:(idx_old - 1)]
+        @test occursin("a later change", new_section)
+        @test !occursin("Release v0.1.1", new_section)  # the boundary commit itself is excluded
+        @test !occursin("initial commit", new_section)  # and definitely not the whole prior history
     end
 
     @testset "NbRelease.prep_release: full export+test+bump+changelog+commit cycle" begin
@@ -907,6 +1087,20 @@ end
         @test !isfile(joinpath(cfg.root, "CHANGELOG.md"))
         log = read(`git -C $(cfg.root) log --oneline`, String)
         @test !occursin("Release", log)
+    end
+
+    @testset "NbRelease.prep_release: calling it twice with no new commits errors instead of double-releasing" begin
+        cfg = temp_project([("code", "#| default_exp core"), ("code", "#| export\nfoo() = 1")])
+        git_init!(cfg)
+        v1 = NbRelease.prep_release(; cfg = Config.load_config(cfg.root), level = :patch)
+        @test v1 == "0.1.1"
+
+        @test_throws ErrorException NbRelease.prep_release(; cfg = Config.load_config(cfg.root), level = :patch)
+        # the aborted second attempt changed nothing: no second bump, no duplicated changelog section
+        @test occursin("version = \"0.1.1\"", read(joinpath(cfg.root, "Project.toml"), String))
+        @test !occursin("version = \"0.1.2\"", read(joinpath(cfg.root, "Project.toml"), String))
+        changelog_text = read(joinpath(cfg.root, "CHANGELOG.md"), String)
+        @test count("## v0.1.1", changelog_text) == 1
     end
 
     @testset "real project smoke test: using NBJulia itself exports foo" begin

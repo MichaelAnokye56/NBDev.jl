@@ -157,9 +157,21 @@ function merge_cells(base, ours, theirs)
             else
                 had_conflict = true
                 mark("OURS ↓")
-                push!(merged_cells, o)
+                # `o` and `t` share `id` whenever `clean_ids` normalized both
+                # sides to the same position-based id before they diverged —
+                # give each inserted alternative a fresh id so the merged
+                # notebook never has two cells with the same id (confirmed by
+                # 3 independent stress-test agents: that duplicate breaks the
+                # id-uniqueness invariant `sync_project`/`build_symbol_index`
+                # rely on, and can cause an id-keyed script to touch both
+                # conflicting cells at once instead of one).
+                o2 = deepcopy(o)
+                o2["id"] = NbIO.new_cell_id()
+                push!(merged_cells, o2)
                 mark("THEIRS ↓")
-                push!(merged_cells, t)
+                t2 = deepcopy(t)
+                t2["id"] = NbIO.new_cell_id()
+                push!(merged_cells, t2)
                 mark("delete whichever side you don't want ↑")
             end
         elseif in_ours && !in_theirs

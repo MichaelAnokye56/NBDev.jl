@@ -35,10 +35,20 @@ using ..Export
 using ..NbTest
 using TOML
 
-"Parse a plain `\"X.Y.Z\"` semver string into a `(major, minor, patch)` tuple of `Int`s."
+"""
+Parse a `\"X.Y.Z\"` (optionally `-prerelease`/`+buildmetadata`-suffixed)
+semver string into a `(major, minor, patch)` tuple of `Int`s, discarding
+any suffix. The suffix is accepted (not just tolerated) because
+`NBJulia.scaffold`'s own PkgTemplates-generated `Project.toml` defaults to
+`version = "1.0.0-DEV"` — rejecting it would make `bump_version`/
+`prep_release` fail on every freshly-scaffolded project's first release
+(confirmed: every one of the 10 independent stress-test agents hit this).
+Dropping the suffix on bump is also the semantically right move: a real
+release shouldn't carry a `-DEV` tag forward.
+"""
 function parse_semver(s::AbstractString)
-    m = match(r"^(\d+)\.(\d+)\.(\d+)$", s)
-    m === nothing && error("parse_semver: \"$s\" isn't a plain X.Y.Z semver string.")
+    m = match(r"^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", s)
+    m === nothing && error("parse_semver: \"$s\" isn't a plain X.Y.Z (optionally -prerelease/+build) semver string.")
     return (parse(Int, m.captures[1]), parse(Int, m.captures[2]), parse(Int, m.captures[3]))
 end
 
@@ -69,13 +79,45 @@ function bump_version(; cfg::Config.NBConfig = Config.load_config(), level::Symb
     return newver
 end
 
+"The most recent annotated git tag reachable from `HEAD`, or `nothing` if there are none."
+function last_tag(root::AbstractString)
+    s = try
+        strip(read(`git -C $root describe --tags --abbrev=0`, String))
+    catch
+        ""
+    end
+    return isempty(s) ? nothing : s
+end
+
+"""
+The commit hash of the most recent `prep_release` commit (message starting
+with the literal `Release v`), or `nothing` if there's never been one.
+`prep_release` deliberately never tags (see the module docstring), so this
+is what changelog generation falls back to instead of annotated git tags
+for a project following this tool's own default workflow — without this,
+`changelog`'s "since the last tag" basis would silently mean "since the
+repo's first commit" on *every* call, duplicating the entire history into
+every subsequent release's section (confirmed: 4 of the 10 independent
+stress-test agents hit this).
+"""
+function last_release_commit(root::AbstractString)
+    s = try
+        strip(read(`git -C $root log --grep=^Release\ v --format=%H -n 1`, String))
+    catch
+        ""
+    end
+    return isempty(s) ? nothing : s
+end
+
 """
     changelog(; cfg = Config.load_config(), path = joinpath(cfg.root, "CHANGELOG.md"))
 
 Prepend a new `## vX.Y.Z` section to `path` (created if it doesn't exist
-yet) listing every git commit subject since the last annotated tag
-reachable from `HEAD` (every commit, oldest first, if there are no tags
-yet) — one bullet per commit. `X.Y.Z` is read from the *current*
+yet) listing every git commit subject since whichever is more specific of
+(a) the last annotated tag reachable from `HEAD`, or (b) the last
+`prep_release` commit (see `last_release_commit`) — falling back to every
+commit since the repo's first, oldest first, if neither exists yet (a
+project's genuine first-ever release). `X.Y.Z` is read from the *current*
 `Project.toml` version, so call this *after* `bump_version` if you want
 the new version's number on the new section. `cfg.root` must be inside a
 git repository.
@@ -84,12 +126,8 @@ function changelog(;
     cfg::Config.NBConfig = Config.load_config(),
     path::AbstractString = joinpath(cfg.root, "CHANGELOG.md"),
 )
-    last_tag = try
-        strip(read(`git -C $(cfg.root) describe --tags --abbrev=0`, String))
-    catch
-        nothing
-    end
-    range = last_tag === nothing ? "HEAD" : "$(last_tag)..HEAD"
+    since = something(last_tag(cfg.root), last_release_commit(cfg.root), Some(nothing))
+    range = since === nothing ? "HEAD" : "$(since)..HEAD"
     raw = read(`git -C $(cfg.root) log --reverse --pretty=format:%s $range`, String)
     subjects = filter(!isempty, split(raw, '\n'))
     version = TOML.parsefile(joinpath(cfg.root, "Project.toml"))["version"]
@@ -120,6 +158,11 @@ function prep_release(; cfg::Config.NBConfig = Config.load_config(), level::Symb
     Export.export_project(; cfg = cfg)
     NbTest.test_project(; cfg = cfg) ||
         error("prep_release: one or more notebooks failed testing; fix them before releasing.")
+    since = something(last_tag(cfg.root), last_release_commit(cfg.root), Some(nothing))
+    if since !== nothing
+        head = strip(read(`git -C $(cfg.root) rev-parse HEAD`, String))
+        since == head && error("prep_release: no commits since the last release ($(since[1:7])) — nothing to release.")
+    end
     newver = bump_version(; cfg = cfg, level = level)
     changelog(; cfg = cfg)
     run(`git -C $(cfg.root) add -A`)

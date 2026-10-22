@@ -36,7 +36,13 @@ in order, split on `Export.jl`'s own header line (`# %% <relnb> #<id>`).
 `Export.write_module` already applies before writing it).
 """
 function parse_provenance_blocks(filetext::AbstractString)
-    header_re = r"^# %% (.+) #([0-9a-fA-F]*)$"
+    # The id is matched as any non-whitespace token, not just hex: cell ids
+    # are opaque strings, and `NbClean.clean_notebook`'s default
+    # `clean_ids=true` renumbers them to `cell-<n>` (confirmed by 4
+    # independent stress-test agents: a hex-only pattern here makes
+    # `sync_project` silently never match anything — and therefore never
+    # sync — for any project using the default config).
+    header_re = r"^# %% (.+) #(\S*)$"
     blocks = Tuple{String,String,Vector{SubString{String}}}[]
     cur = nothing
     for line in split(filetext, '\n')
