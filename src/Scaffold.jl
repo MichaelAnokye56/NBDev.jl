@@ -73,12 +73,44 @@ function _append_gitignore!(path::AbstractString)
     return nothing
 end
 
+"NBDev's own package UUID — needed so a scaffolded project's `test/runtests.jl` can `using NBDev` to call `test_project()`."
+const NBDEV_UUID = "3eebc052-47fe-49af-b748-16acf4bee79e"
+"NBDev's own repo — not registered in General yet, so a scaffolded project pins it by URL/rev via `[sources]` rather than a registry version."
+const NBDEV_URL = "https://github.com/MichaelAnokye56/NBDev.jl"
+
+function _wire_test_project!(root::AbstractString, name::AbstractString)
+    runtests_path = joinpath(root, "test", "runtests.jl")
+    write(runtests_path, """
+    using $(name)
+    using NBDev
+    using Test
+
+    @testset "$(name).jl" begin
+        # The real tests live in the notebooks under nbs/ (nbdev-style
+        # literate development) -- this runs every one of them as a test.
+        @test NBDev.test_project()
+    end
+    """)
+
+    projfile = joinpath(root, "Project.toml")
+    txt = read(projfile, String)
+    occursin("NBDev", txt) && return nothing  # already wired (e.g. re-running scaffold)
+
+    txt = replace(txt, r"(\[extras\]\n)" => SubstitutionString("\\1NBDev = \"$(NBDEV_UUID)\"\n"))
+    txt = replace(txt, r"(\[targets\]\ntest = \[)" => SubstitutionString("\\1\"NBDev\", "))
+    sources_table = "\n[sources]\nNBDev = {url = \"$(NBDEV_URL)\", rev = \"main\"}\n"
+    txt = replace(txt, r"\n(\[targets\])" => SubstitutionString(sources_table * "\\1"))
+    write(projfile, txt)
+    return nothing
+end
+
 function _write_nbdev_layer!(root::AbstractString, name::AbstractString, description::AbstractString)
     nbs = joinpath(root, "nbs")
     mkpath(nbs)
 
     _add_nbdev_table!(joinpath(root, "Project.toml"))
     _append_gitignore!(joinpath(root, ".gitignore"))
+    _wire_test_project!(root, name)
 
     desc_line = isempty(description) ? "> Fill in a description here" : "> $(description)"
     index_nb = NbIO.new_notebook([

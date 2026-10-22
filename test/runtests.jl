@@ -3,6 +3,7 @@ using NBDev: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto, 
 using Test
 using OrderedCollections
 using Markdown
+using TOML
 
 # ---------------------------------------------------------------------------
 # Test fixture helpers (self-contained — no real .ipynb files needed)
@@ -470,6 +471,66 @@ end
         res = Export.export_project(; cfg = cfg)
         @test res.relfiles == ["core.jl"]
         @test res.exportnames == ["foo"]
+    end
+
+    @testset "scaffold: wires test/runtests.jl to NBDev.test_project(), not PkgTemplates' empty placeholder" begin
+        # Found while polishing FTransform (a real package built with
+        # NBDev): PkgTemplates' default test/runtests.jl is an empty
+        # `@testset ... end`, so `Pkg.test()`/CI passed regardless of
+        # whether the notebooks actually worked. Every scaffolded project
+        # needs this wired up, not just the one that happened to notice.
+        dir = mktempdir()
+        root = Scaffold.scaffold(
+            "WiredTestPkg"; dir = dir, user = "testuser",
+            author = "Test Author", author_email = "test@example.com",
+        )
+        runtests = read(joinpath(root, "test", "runtests.jl"), String)
+        @test occursin("using NBDev", runtests)
+        @test occursin("NBDev.test_project()", runtests)
+
+        proj = read(joinpath(root, "Project.toml"), String)
+        @test occursin("NBDev = \"$(Scaffold.NBDEV_UUID)\"", proj)
+        @test occursin("[sources]", proj)
+        @test occursin(Scaffold.NBDEV_URL, proj)
+        @test occursin(r"\[targets\]\ntest = \[\"NBDev\", \"Test\"\]", proj)
+
+        # The generated Project.toml must actually parse as valid TOML
+        # (a regex-based rewrite is exactly the kind of thing that can
+        # silently produce a malformed file) and really resolve/test —
+        # run it as a real subprocess so this isn't just a string check.
+        toml = TOML.parsefile(joinpath(root, "Project.toml"))
+        @test haskey(toml["extras"], "NBDev")
+        @test toml["sources"]["NBDev"]["url"] == Scaffold.NBDEV_URL
+
+        script = """
+        using Pkg
+        Pkg.activate(\"$(root)\")
+        Pkg.instantiate()
+        Pkg.test()
+        """
+        # Captured to its own file, not inherited from the parent process:
+        # an inherited stdout/stderr is shared with the *outer* `Pkg.test()`
+        # run executing this very test, and the two processes' independent
+        # buffering can interleave their output out of logical order in
+        # the combined stream, making a failure here unreadable. Not
+        # `run(cmd)` either -- that throws `ProcessFailedException` on a
+        # non-zero exit instead of letting `@test` report it cleanly.
+        #
+        # JULIA_LOAD_PATH also needs clearing, not just inheriting: this
+        # whole test is itself running inside a `Pkg.test()`-spawned
+        # process, and Pkg.test() sets JULIA_LOAD_PATH to its own isolated
+        # test env with no `@stdlib` entry -- confirmed empirically (a
+        # minimal throwaway package reproduced it in isolation) that an
+        # inherited value breaks the nested `using Pkg` with "Package Pkg
+        # not found in current path", nothing to do with the actual fix
+        # being tested.
+        logpath, logio = mktemp()
+        proc = withenv("JULIA_LOAD_PATH" => nothing, "JULIA_PROJECT" => nothing) do
+            run(pipeline(ignorestatus(`julia -e $script`); stdout = logio, stderr = logio); wait = true)
+        end
+        close(logio)
+        @test proc.exitcode == 0
+        proc.exitcode == 0 || println("WiredTestPkg subprocess output:\n", read(logpath, String))
     end
 
     @testset "does_cell_eval / select_test_cells" begin

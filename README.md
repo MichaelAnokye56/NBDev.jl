@@ -33,7 +33,8 @@ NBDev.scaffold("MyLib"; dir = pwd(), user = "yourgithubuser",
 cd("MyLib"); using Pkg; Pkg.activate(".")
 NBDev.export_project()
 
-# 3. Run every notebook as your test suite:
+# 3. Run every notebook as your test suite -- scaffold() already wired
+#    test/runtests.jl and Project.toml so plain `Pkg.test()` does this too:
 NBDev.test_project()
 
 # 4. Build a docs site (needs the `quarto` CLI on PATH):
