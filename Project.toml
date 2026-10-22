@@ -1,6 +1,6 @@
 name = "NBJulia"
 uuid = "3eebc052-47fe-49af-b748-16acf4bee79e"
-version = "1.0.0-DEV"
+version = "0.1.0"
 authors = ["Anokye <manokye56@gmail.com>"]
 
 [deps]
