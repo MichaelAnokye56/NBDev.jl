@@ -772,17 +772,24 @@ end
     end
 
     @testset "NbQuarto.render_docs: real end-to-end quarto render" begin
-        cfg = temp_project([
-            ("markdown", "# core\n\n> description"),
-            ("code", "#| default_exp core"),
-            ("code", "#| export\nfoo(x) = x + 1"),
-        ])
-        @test Sys.which("quarto") !== nothing  # this machine has it; skip-worthy elsewhere
-        ok = NbQuarto.render_docs(cfg)
-        @test ok
-        @test isfile(joinpath(cfg.d["doc_path"], "core.html"))
-        html = read(joinpath(cfg.d["doc_path"], "core.html"), String)
-        @test occursin("foo", html)
+        if Sys.which("quarto") === nothing
+            # Not installed on this machine (e.g. a CI runner) — skip the
+            # real render rather than asserting presence and then erroring
+            # on the render call itself. stage_docs (no quarto needed) is
+            # still exercised by its own separate testset above.
+            @test_skip false
+        else
+            cfg = temp_project([
+                ("markdown", "# core\n\n> description"),
+                ("code", "#| default_exp core"),
+                ("code", "#| export\nfoo(x) = x + 1"),
+            ])
+            ok = NbQuarto.render_docs(cfg)
+            @test ok
+            @test isfile(joinpath(cfg.d["doc_path"], "core.html"))
+            html = read(joinpath(cfg.d["doc_path"], "core.html"), String)
+            @test occursin("foo", html)
+        end
     end
 
     @testset "NbClean.clean_notebook" begin
