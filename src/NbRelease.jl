@@ -17,7 +17,7 @@ Deliberately does **not** reimplement nbdev's PyPI/conda uploader, and does
    reimplementing registry PRs and GitHub bot interactions, not porting
    nbdev's actual logic.
 2. Both of those steps need a real GitHub remote, which this project
-   doesn't have (see `instruction_to_self.md`'s decisions — the `NBJulia`
+   doesn't have (see `instruction_to_self.md`'s decisions — the `NBDev`
    repo is local-only, by design) and are exactly the kind of
    visible-to-others, hard-to-reverse actions this project's own safety
    rules say to never take without being explicitly asked each time —
@@ -39,7 +39,7 @@ using TOML
 Parse a `\"X.Y.Z\"` (optionally `-prerelease`/`+buildmetadata`-suffixed)
 semver string into a `(major, minor, patch)` tuple of `Int`s, discarding
 any suffix. The suffix is accepted (not just tolerated) because
-`NBJulia.scaffold`'s own PkgTemplates-generated `Project.toml` defaults to
+`NBDev.scaffold`'s own PkgTemplates-generated `Project.toml` defaults to
 `version = "1.0.0-DEV"` — rejecting it would make `bump_version`/
 `prep_release` fail on every freshly-scaffolded project's first release
 (confirmed: every one of the 10 independent stress-test agents hit this).

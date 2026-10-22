@@ -86,11 +86,11 @@ end
     build_symbol_index(cfg)
 
 Scan every `.jl` file under `cfg.src_path` and return
-`Dict{String,SymbolEntry}` mapping each name nbjulia-exported code
+`Dict{String,SymbolEntry}` mapping each name nbdev-exported code
 defines to where it came from. Last writer wins if (unusually) the same
 name is defined in two places. Not a full equivalent of nbdev's
 cross-package `_modidx.py` lookup (no `entry_points`-based lookup across
-other installed nbjulia packages) — just this project's own symbols, for
+other installed nbdev packages) — just this project's own symbols, for
 now.
 """
 function build_symbol_index(cfg::Config.NBConfig)
@@ -148,7 +148,7 @@ macro already in scope (e.g. `show_doc(foo)`), or a name as a `String`/
 
 Pass `index` (a `Dict{String,SymbolEntry}` from `build_symbol_index`) to
 append a "defined in `<notebook>` (cell `<id>`)" line when the name is
-one nbjulia exported — the Julia analog of nbdev's source-link.
+one nbdev exported — the Julia analog of nbdev's source-link.
 """
 function show_doc(
     x;
@@ -199,7 +199,7 @@ end
 # ---------------------------------------------------------------------------
 # Auto show_doc insertion + per-cell visibility (nbdev's add_show_docs +
 # rm_export + add_fold + hide_, combined into one decision per cell since
-# nbjulia renders straight to text rather than mutating notebook cells)
+# nbdev renders straight to text rather than mutating notebook cells)
 # ---------------------------------------------------------------------------
 
 "How one cell participates in a rendered docs page."
@@ -220,7 +220,7 @@ Names already passed to a bare `show_doc(name)` call anywhere in the
 notebook (e.g. `show_doc(foo)`, `show_doc(:foo)`, `show_doc("foo")`) —
 these are excluded from auto-insertion, matching nbdev's own dedup
 ("unless they are already documented"). Simplification vs. nbdev: only
-bare calls are recognized, not a qualified `NBJulia.show_doc(...)` form.
+bare calls are recognized, not a qualified `NBDev.show_doc(...)` form.
 """
 function explicitly_shown_names(nb)
     shown = Set{String}()
@@ -354,7 +354,7 @@ function render_notebook(
 )
     nb = NbIO.read_nb(nbpath)
     already = explicitly_shown_names(nb)
-    mod = Module(Symbol("NBJuliaDocs_", replace(basename(nbpath), r"[^A-Za-z0-9]" => "_")))
+    mod = Module(Symbol("NBDevDocs_", replace(basename(nbpath), r"[^A-Za-z0-9]" => "_")))
     parts = String[]
     for cell in nb["cells"]
         ctype = get(cell, "cell_type", "")

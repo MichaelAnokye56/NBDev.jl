@@ -1,5 +1,5 @@
 """
-Project configuration: reads the `[nbjulia]` table out of the nearest
+Project configuration: reads the `[nbdev]` table out of the nearest
 `Project.toml`, the same way nbdev reads `[tool.nbdev]` out of
 `pyproject.toml`. No separate config file needed — Julia's `Project.toml`
 is already TOML, and both `Pkg` and the `TOML` stdlib tolerate the extra
@@ -47,7 +47,7 @@ end
     NBConfig
 
 Resolved project configuration: the project root directory plus every key
-from `[nbjulia]` (merged over `DEFAULTS`), with path-valued keys
+from `[nbdev]` (merged over `DEFAULTS`), with path-valued keys
 (`nbs_path`, `doc_path`, `src_path`) resolved to absolute paths.
 """
 struct NBConfig
@@ -70,18 +70,18 @@ const _PATH_KEYS = ("nbs_path", "doc_path", "src_path")
 """
     load_config(path=pwd())
 
-Load the `[nbjulia]` table from the nearest `Project.toml` to `path`,
+Load the `[nbdev]` table from the nearest `Project.toml` to `path`,
 merged over `DEFAULTS`. Raises if no `Project.toml` is found.
 """
 function load_config(path::AbstractString = pwd())
     toml_path = find_project_toml(path)
     toml_path === nothing && error(
         "No Project.toml found walking up from $(abspath(path)). " *
-        "nbjulia commands must run inside a Julia project.")
+        "nbdev commands must run inside a Julia project.")
     root = dirname(toml_path)
     proj = TOML.parsefile(toml_path)
-    nbjulia = get(proj, "nbjulia", Dict{String,Any}())
-    d = merge(DEFAULTS, nbjulia)
+    nbdev = get(proj, "nbdev", Dict{String,Any}())
+    d = merge(DEFAULTS, nbdev)
     for k in _PATH_KEYS
         d[k] = joinpath(root, d[k])
     end

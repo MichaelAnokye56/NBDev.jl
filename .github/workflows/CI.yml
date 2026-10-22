@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Configure a git identity for the test suite
-        # PkgTemplates' Git plugin (exercised by NBJulia.scaffold, which
+        # PkgTemplates' Git plugin (exercised by NBDev.scaffold, which
         # several tests call) requires global user.name/user.email to be
         # set before it will generate a package, same as it would for any
         # real user on their own machine — CI runners don't have one by

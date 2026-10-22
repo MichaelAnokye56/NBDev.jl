@@ -1,7 +1,7 @@
 """
 Stage rendered notebooks into a Quarto project and shell out to `quarto
 render` — the Julia analog of nbdev's `quarto.py` (`nbdev_docs`/
-`_pre_docs`). Same division of labor as nbdev itself: nbjulia prepares
+`_pre_docs`). Same division of labor as nbdev itself: nbdev prepares
 plain, already-rendered content; Quarto turns it into an HTML site. The
 `.qmd` files `render_notebook` (`NbDocs.jl`) produces already have every
 cell's output baked in as text, so the staged Quarto project is built
@@ -13,7 +13,7 @@ Quarto ever attempting to find or invoke a Julia execution engine).
 
 Known simplification vs. nbdev: no `sidebar.yml` generation — delegated
 to Quarto's own `sidebar: contents: auto`, which discovers pages from the
-staged directory structure directly, since nbjulia doesn't yet have
+staged directory structure directly, since nbdev doesn't yet have
 nbdev's doc_host/git_url config fields to build a fancier one from.
 """
 module NbQuarto

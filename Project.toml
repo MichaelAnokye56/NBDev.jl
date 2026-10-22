@@ -1,4 +1,4 @@
-name = "NBJulia"
+name = "NBDev"
 uuid = "3eebc052-47fe-49af-b748-16acf4bee79e"
 version = "0.1.0"
 authors = ["Anokye <manokye56@gmail.com>"]
@@ -21,7 +21,7 @@ julia = "1.10"
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
-[nbjulia]
+[nbdev]
 branch = "main"
 cell_timeout = 600
 clean_ids = true

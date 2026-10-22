@@ -8,7 +8,7 @@ the `#<cellid>` in `Export.jl`'s own provenance header, `# %% <relnb>
 Mechanically simpler than nbdev's version: nbdev has to re-discover
 function/class boundaries inside the `.py` file to know what to match back
 (Python cells can interleave in less structured ways), whereas every
-nbjulia cell already becomes its own contiguous, clearly-delimited
+nbdev cell already becomes its own contiguous, clearly-delimited
 provenance block when exported (see `Export.write_module`), so syncing is
 just "parse blocks back out by their header line, compare, splice."
 

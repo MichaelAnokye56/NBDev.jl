@@ -45,20 +45,20 @@ using OrderedCollections
 "POSIX-shell-quote `s` (git re-invokes driver command strings via `sh -c`, so values stored in git config must be valid shell words even though this function's own `run(` ``git config key val` ``)` call needs no quoting of its own — Julia's backtick commands exec argv directly, no shell involved)."
 shell_quote(s::AbstractString) = "'" * replace(s, "'" => raw"'\''") * "'"
 
-"The `julia --project=<root> -e '<call>'` command line one of nbjulia's drivers runs as."
+"The `julia --project=<root> -e '<call>'` command line one of nbdev's drivers runs as."
 julia_driver_cmd(cfg::Config.NBConfig, call::AbstractString) =
-    "julia --project=$(shell_quote(cfg.root)) -e $(shell_quote("using NBJulia; " * call))"
+    "julia --project=$(shell_quote(cfg.root)) -e $(shell_quote("using NBDev; " * call))"
 
 const ATTR_LINES = (
-    "*.ipynb filter=nbjulia-clean",
-    "*.ipynb merge=nbjulia-notebook",
-    "*.ipynb diff=nbjulia-notebook",
+    "*.ipynb filter=nbdev-clean",
+    "*.ipynb merge=nbdev-notebook",
+    "*.ipynb diff=nbdev-notebook",
 )
 
 """
     install_hooks(; cfg = Config.load_config())
 
-Register nbjulia's clean filter and merge/diff drivers for `*.ipynb` files
+Register nbdev's clean filter and merge/diff drivers for `*.ipynb` files
 in this project's git repo: appends the attribute lines in `ATTR_LINES` to
 `.gitattributes` (creating it if needed; only the lines not already
 present are added), and sets the matching `filter.*`/`merge.*`/`diff.*`
@@ -82,15 +82,15 @@ function install_hooks(; cfg::Config.NBConfig = Config.load_config())
     end
 
     setcfg(key, val) = run(`git -C $(cfg.root) config $key $val`)
-    setcfg("filter.nbjulia-clean.clean", julia_driver_cmd(cfg, "NBJulia.clean_filter_main()"))
-    setcfg("filter.nbjulia-clean.smudge", "cat")
-    setcfg("filter.nbjulia-clean.required", "false")
-    setcfg("merge.nbjulia-notebook.name", "nbjulia notebook merge driver")
+    setcfg("filter.nbdev-clean.clean", julia_driver_cmd(cfg, "NBDev.clean_filter_main()"))
+    setcfg("filter.nbdev-clean.smudge", "cat")
+    setcfg("filter.nbdev-clean.required", "false")
+    setcfg("merge.nbdev-notebook.name", "nbdev notebook merge driver")
     setcfg(
-        "merge.nbjulia-notebook.driver",
-        julia_driver_cmd(cfg, "exit(NBJulia.merge_driver_main(ARGS))") * " -- %O %A %B %P",
+        "merge.nbdev-notebook.driver",
+        julia_driver_cmd(cfg, "exit(NBDev.merge_driver_main(ARGS))") * " -- %O %A %B %P",
     )
-    setcfg("diff.nbjulia-notebook.command", julia_driver_cmd(cfg, "NBJulia.diff_driver_main(ARGS)"))
+    setcfg("diff.nbdev-notebook.command", julia_driver_cmd(cfg, "NBDev.diff_driver_main(ARGS)"))
     return nothing
 end
 
@@ -144,7 +144,7 @@ function merge_cells(base, ours, theirs)
 
     merged_cells = Any[]
     had_conflict = false
-    mark(label) = push!(merged_cells, NbIO.markdown_cell("--- nbjulia merge conflict: $(label) ---"))
+    mark(label) = push!(merged_cells, NbIO.markdown_cell("--- nbdev merge conflict: $(label) ---"))
 
     for id in ordered_ids
         in_base, in_ours, in_theirs = haskey(base_m, id), haskey(ours_m, id), haskey(theirs_m, id)
@@ -207,7 +207,7 @@ end
 
 Entry point for the git `merge` driver. `args` is `[ancestor, ours, theirs,
 path]` — the `%O %A %B %P` git substitutes into
-`merge.nbjulia-notebook.driver` (verified empirically: `%A`'s file already
+`merge.nbdev-notebook.driver` (verified empirically: `%A`'s file already
 holds "ours" content when the driver is invoked, and the driver is
 expected to overwrite `%A` in place with the merge result). Returns `0` on
 a clean merge, `1` if a true conflict remains (so git still reports the
@@ -265,7 +265,7 @@ end
 
 Entry point for the git `diff` driver. `args` is `[path, old_file,
 old_hex, old_mode, new_file, new_hex, new_mode]` — the 7 positional
-arguments git appends automatically after `diff.nbjulia-notebook.command`
+arguments git appends automatically after `diff.nbdev-notebook.command`
 (verified empirically against real `git diff`; no `%`-token substitution
 needed for a diff driver, unlike a merge driver). Prints a unified diff of
 each side's flattened cell-source text to stdout.

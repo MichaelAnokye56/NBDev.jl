@@ -1,5 +1,5 @@
-using NBJulia
-using NBJulia: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto, NbClean, NbGit, NbSync, NbRelease
+using NBDev
+using NBDev: NbIO, Process, Export, Config, Scaffold, NbTest, NbDocs, NbQuarto, NbClean, NbGit, NbSync, NbRelease
 using Test
 using OrderedCollections
 using Markdown
@@ -44,7 +44,7 @@ function temp_project(cells::Vector{Tuple{String,String}}; nbname = "core.ipynb"
         uuid = "00000000-0000-0000-0000-000000000000"
         version = "0.1.0"
 
-        [nbjulia]
+        [nbdev]
         nbs_path = "nbs"
         src_path = "src"
         doc_path = "_docs"
@@ -91,7 +91,7 @@ end
 
 # ---------------------------------------------------------------------------
 
-@testset "NBJulia.jl" begin
+@testset "NBDev.jl" begin
     @testset "directive parsing" begin
         @test NbIO.parse_directive("#| export") == ("export" => "")
         @test NbIO.parse_directive("#|export") == ("export" => "")
@@ -372,7 +372,7 @@ end
         uuid = "00000000-0000-0000-0000-00000000face"
         version = "0.1.0"
 
-        [nbjulia]
+        [nbdev]
         nbs_path = "nbs"
         src_path = "src"
         """)
@@ -410,7 +410,7 @@ end
             uuid = "00000000-0000-0000-0000-000000000000"
             version = "0.1.0"
 
-            [nbjulia]
+            [nbdev]
             nbs_path = "nbs"
             src_path = "src"
             """)
@@ -445,7 +445,7 @@ end
         @test isfile(joinpath(root, "nbs", "00_core.ipynb"))
 
         proj = read(joinpath(root, "Project.toml"), String)
-        @test occursin("[nbjulia]", proj)
+        @test occursin("[nbdev]", proj)
         @test occursin("name = \"ScaffoldTestPkg\"", proj)
         @test occursin("Test Author <test@example.com>", proj)
 
@@ -521,7 +521,7 @@ end
         uuid = "00000000-0000-0000-0000-000000000000"
         version = "0.1.0"
 
-        [nbjulia]
+        [nbdev]
         nbs_path = "nbs"
         """)
         mkpath(joinpath(root, "nbs"))
@@ -602,7 +602,7 @@ end
             ("code", "show_doc(foo)"),
             ("code", "show_doc(:bar)"),
             ("code", "show_doc(\"baz\")"),
-            ("code", "NBJulia.show_doc(qux)"),  # qualified form: not recognized (documented simplification)
+            ("code", "NBDev.show_doc(qux)"),  # qualified form: not recognized (documented simplification)
             ("code", "x = 1"),
             ("markdown", "# hi"),
         ])
@@ -697,7 +697,7 @@ end
 
     @testset "render_notebook: explicit show_doc suppresses auto-insertion" begin
         cfg = temp_project([
-            ("code", "#| hide\nusing NBJulia"),
+            ("code", "#| hide\nusing NBDev"),
             ("code", "#| default_exp core"),
             ("code", "#| export\nfoo(x) = x + 1"),
             ("code", "show_doc(foo)"),
@@ -955,7 +955,7 @@ end
         uuid = "00000000-0000-0000-0000-00000000f00d"
         version = "0.1.0"
 
-        [nbjulia]
+        [nbdev]
         nbs_path = "nbs"
         """)
         mkpath(joinpath(root, "nbs"))
@@ -966,15 +966,15 @@ end
 
         NbGit.install_hooks(; cfg = cfg)
         attrs = read(joinpath(root, ".gitattributes"), String)
-        @test occursin("filter=nbjulia-clean", attrs)
-        @test occursin("merge=nbjulia-notebook", attrs)
-        @test occursin("diff=nbjulia-notebook", attrs)
+        @test occursin("filter=nbdev-clean", attrs)
+        @test occursin("merge=nbdev-notebook", attrs)
+        @test occursin("diff=nbdev-notebook", attrs)
         # idempotent: calling again doesn't duplicate attribute lines
         NbGit.install_hooks(; cfg = cfg)
-        @test count("filter=nbjulia-clean", read(joinpath(root, ".gitattributes"), String)) == 1
-        @test occursin("NBJulia.clean_filter_main", read(`git -C $root config filter.nbjulia-clean.clean`, String))
-        @test occursin("NBJulia.merge_driver_main", read(`git -C $root config merge.nbjulia-notebook.driver`, String))
-        @test occursin("NBJulia.diff_driver_main", read(`git -C $root config diff.nbjulia-notebook.command`, String))
+        @test count("filter=nbdev-clean", read(joinpath(root, ".gitattributes"), String)) == 1
+        @test occursin("NBDev.clean_filter_main", read(`git -C $root config filter.nbdev-clean.clean`, String))
+        @test occursin("NBDev.merge_driver_main", read(`git -C $root config merge.nbdev-notebook.driver`, String))
+        @test occursin("NBDev.diff_driver_main", read(`git -C $root config diff.nbdev-notebook.command`, String))
 
         NbIO.write_nb(mk_nb([("code", "x = 1")]), joinpath(root, "nbs", "core.ipynb"))
         run(`git -C $root add -A`)
@@ -1086,7 +1086,7 @@ end
     end
 
     @testset "NbRelease.bump_version: tolerates scaffold's own \"X.Y.Z-DEV\" default version" begin
-        # NBJulia.scaffold (via PkgTemplates) writes exactly this by default;
+        # NBDev.scaffold (via PkgTemplates) writes exactly this by default;
         # every one of the 10 independent stress-test agents hit this crash
         # on the very first `prep_release()`/`bump_version()` call.
         cfg = temp_project([("code", "#| default_exp core")])
@@ -1186,10 +1186,10 @@ end
         @test count("## v0.1.1", changelog_text) == 1
     end
 
-    @testset "real project smoke test: using NBJulia itself exports foo" begin
-        # NBJulia's own nbs/00_core.ipynb exports `foo`; confirm the generated
+    @testset "real project smoke test: using NBDev itself exports foo" begin
+        # NBDev's own nbs/00_core.ipynb exports `foo`; confirm the generated
         # src/core.jl round-trips through the actual package namespace.
-        @test isdefined(NBJulia, :foo)
-        @test NBJulia.foo() === nothing
+        @test isdefined(NBDev, :foo)
+        @test NBDev.foo() === nothing
     end
 end

@@ -3,7 +3,7 @@ Project scaffolding: the Julia analog of nbdev's `nbdev_new`/
 `nbdev_create_config`. Generates a real Julia package via `PkgTemplates.jl`
 (License/Git/Tests/GitHubActions/Codecov/CompatHelper/TagBot/Dependabot),
 then layers on the nbdev-style pieces: `nbs/index.ipynb` and
-`nbs/00_core.ipynb` (using nbdev's own directive syntax), the `[nbjulia]`
+`nbs/00_core.ipynb` (using nbdev's own directive syntax), the `[nbdev]`
 config table in `Project.toml`, and `.gitignore` entries for Quarto/Jupyter
 build state.
 
@@ -34,9 +34,9 @@ function _github_user_from_remote()
     return m === nothing ? nothing : String(m.captures[1])
 end
 
-const NBJULIA_TABLE = """
+const NBDEV_TABLE = """
 
-[nbjulia]
+[nbdev]
 nbs_path = "nbs"
 doc_path = "_docs"
 src_path = "src"
@@ -48,16 +48,16 @@ branch = "main"
 cell_timeout = 600
 """
 
-function _add_nbjulia_table!(projfile::AbstractString)
+function _add_nbdev_table!(projfile::AbstractString)
     txt = read(projfile, String)
-    occursin("[nbjulia]", txt) && return nothing
-    write(projfile, rstrip(txt) * "\n" * NBJULIA_TABLE)
+    occursin("[nbdev]", txt) && return nothing
+    write(projfile, rstrip(txt) * "\n" * NBDEV_TABLE)
     return nothing
 end
 
 const GITIGNORE_EXTRA = """
 
-# nbjulia: docs build output and Quarto/Jupyter working state
+# nbdev: docs build output and Quarto/Jupyter working state
 /_docs/
 /_proc/
 .quarto/
@@ -68,16 +68,16 @@ const GITIGNORE_EXTRA = """
 
 function _append_gitignore!(path::AbstractString)
     txt = isfile(path) ? read(path, String) : ""
-    occursin("# nbjulia:", txt) && return nothing
+    occursin("# nbdev:", txt) && return nothing
     write(path, rstrip(txt) * "\n" * GITIGNORE_EXTRA)
     return nothing
 end
 
-function _write_nbjulia_layer!(root::AbstractString, name::AbstractString, description::AbstractString)
+function _write_nbdev_layer!(root::AbstractString, name::AbstractString, description::AbstractString)
     nbs = joinpath(root, "nbs")
     mkpath(nbs)
 
-    _add_nbjulia_table!(joinpath(root, "Project.toml"))
+    _add_nbdev_table!(joinpath(root, "Project.toml"))
     _append_gitignore!(joinpath(root, ".gitignore"))
 
     desc_line = isempty(description) ? "> Fill in a description here" : "> $(description)"
@@ -102,7 +102,7 @@ end
     scaffold(name; dir=pwd(), user=nothing, author=nothing, author_email=nothing,
              description="", license="MIT", julia_version=v"1.10")
 
-Scaffold a brand-new nbjulia project named `name` in `joinpath(dir, name)`.
+Scaffold a brand-new nbdev project named `name` in `joinpath(dir, name)`.
 
 `author`/`author_email` default to `git config user.name`/`user.email`.
 `user` (GitHub username — used only to build URLs/badges in the generated
@@ -155,7 +155,7 @@ function scaffold(
     t(String(name))
 
     root = joinpath(dir, name)
-    _write_nbjulia_layer!(root, name, description)
+    _write_nbdev_layer!(root, name, description)
     return root
 end
 

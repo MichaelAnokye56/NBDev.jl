@@ -102,7 +102,7 @@ function Base.showerror(io::IO, e::CellError)
     showerror(io, e.error)
 end
 
-_sandbox_name(path::AbstractString) = Symbol("NBJuliaTest_" * replace(basename(path), r"[^A-Za-z0-9]" => "_") * "_" * string(objectid(path)))
+_sandbox_name(path::AbstractString) = Symbol("NBDevTest_" * replace(basename(path), r"[^A-Za-z0-9]" => "_") * "_" * string(objectid(path)))
 
 """
     test_nb(path; skip_flags=Set(["notest"]), force_flags=Set{String}())
@@ -190,7 +190,7 @@ function test_project(;
     end
     println()
     println("="^50)
-    println("nbjulia Tests Failed On The Following Notebooks:")
+    println("nbdev Tests Failed On The Following Notebooks:")
     for (f, err) in failures
         println("\t", f)
         println("\t\t", sprint(showerror, err))

@@ -121,7 +121,7 @@ end
     clean_filter_main(; io_in=stdin, io_out=stdout)
 
 Entry point for the git `clean` filter driver (registered by
-`NbGit.install_hooks` as `filter.nbjulia-clean.clean`): reads one
+`NbGit.install_hooks` as `filter.nbdev-clean.clean`): reads one
 notebook's JSON straight from `io_in` (git pipes the blob's content on
 stdin — there is no reliable file path to work from), cleans it, writes
 the result to `io_out`. Falls back to `Config.load_config()`'s defaults

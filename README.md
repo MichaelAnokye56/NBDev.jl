@@ -1,7 +1,7 @@
-# NBJulia
+# NBDev
 
-[![Build Status](https://github.com/MichaelAnokye56/NBJulia.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/MichaelAnokye56/NBJulia.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Coverage](https://codecov.io/gh/MichaelAnokye56/NBJulia.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/MichaelAnokye56/NBJulia.jl)
+[![Build Status](https://github.com/MichaelAnokye56/NBDev.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/MichaelAnokye56/NBDev.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Coverage](https://codecov.io/gh/MichaelAnokye56/NBDev.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/MichaelAnokye56/NBDev.jl)
 
 Notebook-driven development for Julia — modeled on Jeremy Howard's
 [nbdev](https://nbdev.fast.ai). Write code, tests, and docs together in a
@@ -14,7 +14,7 @@ notebook conflicts cell-by-cell instead of as raw JSON.
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/MichaelAnokye56/NBJulia.jl")
+Pkg.add(url="https://github.com/MichaelAnokye56/NBDev.jl")
 ```
 
 (Not yet registered in the Julia General registry — see below.)
@@ -22,32 +22,32 @@ Pkg.add(url="https://github.com/MichaelAnokye56/NBJulia.jl")
 ## Quickstart
 
 ```julia
-using NBJulia
+using NBDev
 
 # 1. Scaffold a new package (wraps PkgTemplates.jl + an nbdev-style nbs/ layout)
-NBJulia.scaffold("MyLib"; dir = pwd(), user = "yourgithubuser",
+NBDev.scaffold("MyLib"; dir = pwd(), user = "yourgithubuser",
                   author = "Your Name", author_email = "you@example.com")
 
 # 2. Write a notebook under MyLib/nbs/ — see "Directive syntax" below —
 #    then export it into MyLib/src/:
 cd("MyLib"); using Pkg; Pkg.activate(".")
-NBJulia.export_project()
+NBDev.export_project()
 
 # 3. Run every notebook as your test suite:
-NBJulia.test_project()
+NBDev.test_project()
 
 # 4. Build a docs site (needs the `quarto` CLI on PATH):
-NBJulia.render_docs()
+NBDev.render_docs()
 
 # 5. Wire up git so merge conflicts resolve cell-by-cell, not as raw JSON:
-NBJulia.install_hooks()
+NBDev.install_hooks()
 
 # 6. Round-trip a hand-edit made directly in a generated .jl file back
 #    into the notebook it came from:
-NBJulia.sync_project()
+NBDev.sync_project()
 
 # 7. Local release prep — version bump, changelog, a tested/committed release:
-NBJulia.prep_release()
+NBDev.prep_release()
 ```
 
 ## Directive syntax (inside a notebook code cell, as a `#|`-prefixed comment)
@@ -88,7 +88,7 @@ cleanly, though that could not be reproduced on more recent Julia).
 | function | what it does |
 | --- | --- |
 | `scaffold(name; dir, user, author, author_email, ...)` | create a new project (PkgTemplates + nbdev-style `nbs/` layout) |
-| `load_config(path=pwd())` | read the `[nbjulia]` table out of the nearest `Project.toml` |
+| `load_config(path=pwd())` | read the `[nbdev]` table out of the nearest `Project.toml` |
 | `export_project()` / `nb_export(nbpath)` | export every / one notebook's tagged cells into `src/` |
 | `test_project()` / `test_nb(path)` | re-execute every / one notebook's cells as tests |
 | `build_symbol_index(cfg)` | where every exported name is defined |
@@ -122,7 +122,7 @@ abstract-type hierarchy.
 `--ext-diff` explicitly (`git log -p --ext-diff`); plain `git diff`
 already honors the driver with no extra flag — this is standard git
 behavior (external diff drivers are off by default for `log`/`show`), not
-an NBJulia bug.
+an NBDev bug.
 
 ## Known limitations
 
